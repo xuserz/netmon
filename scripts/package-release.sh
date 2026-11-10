@@ -20,5 +20,5 @@ tar -C "$project_dir" -czf "$archive" \
   scripts/install.sh scripts/migrate-dnsmon.sh scripts/uninstall.sh scripts/install-release.sh scripts/build-provider-catalog.py \
   data/providers/catalog.json.gz data/providers/manifest.json data/providers/LICENSE \
   packaging/update-public-key packaging/update-policy.json packaging/netmon-update.service packaging/netmon-update.timer \
-  docs/updates.md docs/providers.md docs/public-dns.md docs/configuration.md docs/operations.md docs/development.md docs/network.md docs/cluster.md
+  docs/forensics.md docs/updates.md docs/providers.md docs/public-dns.md docs/configuration.md docs/operations.md docs/development.md docs/network.md docs/cluster.md
 printf '%s\n' "$archive"

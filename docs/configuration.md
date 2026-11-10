@@ -34,6 +34,13 @@ See [network monitoring](network.md) for complete full/forward configurations.
 | `storage.mode` | `full` | `full` stores shared data; `forward` sends from RAM and opens no statistics DB. Forward requires network mode and at least one cluster peer. |
 | `storage.retention` | `0s` | `0s` disables age expiry; optionally 1h..720h. Oldest closed minute windows are removed at database capacity. Every member, including forward, must agree. |
 | `storage.queue_memory_mb` | `8` | Estimated queued snapshot/entry budget, 1..256 MiB; process overhead is additional. |
+| `network.classify` | `true` | Observe bounded outgoing setup tuples to classify incoming traffic. |
+| `network.exclude_replies` | `false` | Omit matched replies from future statistics; UNKNOWN stays counted. |
+| `network.max_tracked_flows` | `8192` | Tuple LRU bound, 0..1,000,000. |
+| `network.flow_timeout` | `2m` | Idle tuple expiry and UDP uncertainty grace, 1s..1h. |
+| `network.detail_targets` | `16` | Protocol/port/class entries per IP/node/minute, 1..64; overflow is explicitly partial. |
+| `network.analysis_interval` | `2s` | Built-in full-node incident-analysis interval, 1s..1m. |
+| `network.analysis_budget` | `200ms` | Work deadline, 50ms..1s and at most half the interval; not a CPU quota. |
 | `network.capture` | `true` | `false` makes a full node a receiver-only replica. |
 | `network.ports` | `[]` | Optional destination-port allowlist, at most 64 entries. Empty includes all ports/protocols. |
 | `network.exclude_ports` | `[]` | Destination-port exclusions, at most 64. Replication TCP ports are additionally excluded automatically in both directions. |

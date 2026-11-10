@@ -43,7 +43,7 @@ jobs:
       - name: Test AF_PACKET and kernel BPF on loopback
         shell: bash
         run: |
-          sudo env NETMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor ./internal/cluster -run "Live|ThreePeers|WrongCluster"
+          sudo env NETMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor ./internal/cluster ./internal/network -run "Live|ThreePeers|WrongCluster"
       - name: Paced real-binary load test on isolated loopback
         run: |
           sudo unshare --net sh -c 'set -e; ip link set lo up; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_recovery.py -v; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_cluster.py -v; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_network.py -v; python3 scripts/loadtest.py --rate 1000 --seconds 3; python3 scripts/loadtest.py --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200; python3 scripts/loadtest.py --mode network --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200'

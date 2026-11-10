@@ -86,9 +86,58 @@ func compactDigest(ctx context.Context, db *sql.DB) ([]byte, int64, error) {
 			count++
 		}
 		if len(rows) < 128 {
+			if e := compactMetadataDigest(ctx, db, h); e != nil {
+				return nil, 0, e
+			}
+
 			return h.Sum(nil), count, nil
 		}
 	}
+}
+
+func compactMetadataDigest(ctx context.Context, db *sql.DB, h hash.Hash) error {
+	for _, table := range []struct{ name, key string }{{"net_meta", "id"}, {"net_storage", "id"}, {"net_totals", "id"}, {"net_ips", "ip"}, {"net_peers", "url"}, {"net_incidents", "id"}, {"net_analysis", "id"}} {
+		var exists int
+		if e := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table.name).Scan(&exists); e != nil {
+			return e
+		}
+		if exists == 0 {
+			continue
+		}
+		rows, e := db.QueryContext(ctx, "SELECT * FROM "+table.name+" ORDER BY "+table.key)
+		if e != nil {
+			return e
+		}
+		columns, e := rows.Columns()
+		if e != nil {
+			rows.Close()
+			return e
+		}
+		h.Write([]byte(table.name))
+		for rows.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(values))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if e = rows.Scan(pointers...); e != nil {
+				rows.Close()
+				return e
+			}
+			raw, e := json.Marshal(values)
+			if e != nil {
+				rows.Close()
+				return e
+			}
+			h.Write(raw)
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // Compact creates a verified copy; it never replaces the source or changes its
@@ -216,6 +265,9 @@ func Compact(ctx context.Context, c config.Config, output string) (result Compac
 		if e = tx.Commit(); e != nil {
 			return result, e
 		}
+	}
+	if e = compactMetadataDigest(ctx, w.DB, expected); e != nil {
+		return result, e
 	}
 	var journal string
 	if e = w.DB.QueryRowContext(ctx, "PRAGMA journal_mode=DELETE").Scan(&journal); e != nil {

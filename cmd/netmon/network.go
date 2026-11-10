@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -86,6 +87,12 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 	timeout := fs.Duration("timeout", 5*time.Minute, "export deadline")
 	snapshotDirectory := fs.String("snapshot-dir", ".", "filesystem for an isolated bulk-list snapshot")
 	startup := fs.Bool("startup", false, "startup checks")
+	since := fs.String("since", "24h", "show: saved detail duration, RFC3339 timestamp, or all")
+	if command == "show" && len(args) > 0 {
+		if _, e := netip.ParseAddr(args[0]); e == nil {
+			args = append(append([]string(nil), args[1:]...), args[0])
+		}
+	}
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
 			return nil
@@ -96,8 +103,8 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 	if *showNodes && command != "top" {
 		return errors.New("--nodes applies to top; use netmon nodes")
 	}
-	if *jsonNodes && (command != "nodes" || *watch) {
-		return errors.New("--json applies to nodes without --watch")
+	if *jsonNodes && ((command != "nodes" && command != "show") || *watch) {
+		return errors.New("--json applies to nodes/show without --watch")
 	}
 	if command == "nodes" && *once && *watch {
 		return errors.New("--once and --watch are mutually exclusive")
@@ -182,6 +189,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		h := r.Health
 		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nNodes online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
 		fmt.Fprintf(out, "Build: %s\nUpdate: %s; target: %s\n", h.BuildVersion, h.Update.State, h.Update.Target)
+		fmt.Fprintf(out, "Flow cache: %d; evictions: %d\nSaved incidents: %d; analysis lag: %d changes\nAnalysis: %s\n", h.TrackedFlows, h.FlowEvictions, h.IncidentCount, h.AnalysisLag, h.AnalysisError)
 		printNetworkStorage(out, h)
 
 		if h.StorageMode == "full" {
@@ -208,6 +216,11 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		return printNetworkNodes(out, response, *jsonNodes)
 	}
 	if command == "show" {
+		if *timeout < time.Second || *timeout > 5*time.Minute {
+			return errors.New("show --timeout must be 1s..5m")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), min(*timeout, 5*time.Minute))
+		defer cancel()
 		if fs.NArg() != 1 {
 			return errors.New("show requires exactly one IP")
 		}
@@ -215,14 +228,33 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		if e != nil || addr.Zone() != "" {
 			return errors.New("invalid IP address")
 		}
+		cutoff, e := historySince(*since, time.Now())
+		if e != nil {
+			return e
+		}
+		var profile *observation.Profile
+		var events []observation.Incident
 		var row observation.IP
 		if c.Storage.Mode == "full" && !*local {
 			row, e = network.ReadIP(ctx, c, addr.Unmap().String())
+			if e == nil {
+				work, cancel := context.WithTimeout(ctx, min(*timeout, 5*time.Minute))
+				p, pe := network.ReadProfile(work, c, addr.Unmap().String(), cutoff, time.Now().Unix())
+				if pe == nil {
+					profile = &p
+					events, pe = network.ReadIncidents(work, c, addr.Unmap().String(), "", cutoff, 20)
+				}
+				cancel()
+				if pe != nil {
+					return pe
+				}
+			}
 		} else {
 			var response live.Response
 			response, e = live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "show", IP: addr.Unmap().String(), Sort: *sort, Limit: 1, Local: true})
 			if e == nil && len(response.NetworkIPs) == 1 {
 				row = response.NetworkIPs[0]
+				profile = response.Profile
 			} else if e == nil {
 				e = errors.New("IP is not in the bounded RAM sample")
 			}
@@ -235,7 +267,27 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 			return e
 		}
 		row = one[0]
+		if *jsonNodes {
+			return json.NewEncoder(out).Encode(struct {
+				Summary   observation.IP         `json:"summary"`
+				Profile   *observation.Profile   `json:"profile"`
+				Incidents []observation.Incident `json:"incidents"`
+			}{row, profile, events})
+		}
 		printNetworkRows(out, []observation.IP{row})
+		if row.Correlation != nil {
+			fmt.Fprintf(out, "Intensity suspicion: %d/100; correlation: incident %s\n", row.IntensityScore, row.Correlation.ID)
+		}
+		fmt.Fprintf(out, "All saved traffic: INBOUND=%s REPLY=%s UNKNOWN=%s\n", commas(fmt.Sprint(row.Traffic.Inbound)), commas(fmt.Sprint(row.Traffic.Reply)), commas(fmt.Sprint(row.Traffic.Unknown)))
+		if profile != nil {
+			if c.Storage.Mode == "forward" || *local {
+				fmt.Fprintln(out, "Local RAM detail: latest published minute; no saved history.")
+			}
+			printProfile(out, *profile)
+		}
+		for _, v := range events {
+			fmt.Fprintf(out, "Incident: %s %s severity=%d/100 nodes=%d partial=%t\n  %s\n", v.ID, v.Kind, v.Score, v.Nodes, v.Partial, v.Reason)
+		}
 		if row.ServerName != "" {
 			fmt.Fprintf(out, "Server: %s (%s)\n", row.ServerName, row.ServerSource)
 		}

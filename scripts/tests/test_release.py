@@ -189,7 +189,7 @@ class PackagingTests(unittest.TestCase):
             inputs = ["bin/netmon", "netmon.yaml", "ip-labels.yaml", "packaging/netmon.service", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md",
                       "scripts/install.sh", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
                       "docs/public-dns.md", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md",
-                      "docs/providers.md", "docs/updates.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"]
+                      "docs/providers.md", "docs/updates.md", "docs/forensics.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"]
             for name in inputs:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)

@@ -197,6 +197,7 @@ func AcquireUpdateLease(ctx context.Context, c config.Config, node, target strin
 	call := func(ctx context.Context, action string) error {
 		req.Action = action
 		m := t.envelope()
+		m.Version = 3
 		m.UpdateLease = &req
 		reply, e := t.request(ctx, Peer{URL: c.Updates.Coordinator}, "/v3/network/update-lease", m)
 		if e != nil {

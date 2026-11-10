@@ -114,7 +114,7 @@ func TestStoredViewsListAndCSVIncludeCurrentLabels(t *testing.T) {
 	if records[0][14] != "whitelisted" || records[1][14] != "true" || records[1][15] != "Known monitor" {
 		t.Fatal(records)
 	}
-	if len(records[0]) != 19 || records[0][16] != "providers" || !strings.Contains(records[1][16], `"id":"cloudflare"`) || records[1][17] != row.ProviderRevision || records[1][18] != row.ProviderDate {
+	if len(records[0]) != 22 || records[0][16] != "providers" || !strings.Contains(records[1][16], `"id":"cloudflare"`) || records[1][17] != row.ProviderRevision || records[1][18] != row.ProviderDate {
 		t.Fatal(records)
 	}
 	if e = Export(context.Background(), c, c.LabelsFile); e == nil {

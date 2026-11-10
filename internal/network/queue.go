@@ -32,6 +32,7 @@ func newQueue(limit int) *memoryQueue {
 }
 func (q *memoryQueue) put(s observation.Sample, ack *atomic.Int64) bool {
 	s.Ports = append([]uint16(nil), s.Ports...)
+	s.Details = s.Details.Clone()
 	raw, _ := json.Marshal(s)
 	q.mu.Lock()
 	defer q.mu.Unlock()

@@ -21,6 +21,9 @@ var errPayload = errors.New("invalid network observation payload")
 func encodeSample(s observation.Sample) []byte {
 	out := make([]byte, 0, 64+len(s.Name)+len(s.Ports)*2)
 	out = append(out, sampleMagic...)
+	if s.Details != nil {
+		out[2] = 2
+	}
 	flags := byte(0)
 	if s.Partial {
 		flags |= 1
@@ -42,6 +45,25 @@ func encodeSample(s observation.Sample) []byte {
 		out = binary.AppendVarint(out, s.Evidence.At-s.Window)
 		for _, n := range []int64{s.Evidence.PPS, s.Evidence.SYN, int64(s.Evidence.Ports)} {
 			out = binary.AppendUvarint(out, uint64(n))
+		}
+	}
+	if s.Details != nil {
+		d := s.Details
+		for _, v := range []int64{d.Traffic.Unknown, d.Traffic.Inbound, d.Traffic.Reply} {
+			out = binary.AppendUvarint(out, uint64(v))
+		}
+		if d.Partial {
+			out = append(out, 1)
+		} else {
+			out = append(out, 0)
+		}
+		out = binary.AppendUvarint(out, uint64(len(d.Targets)))
+		targets := append([]observation.Target(nil), d.Targets...)
+		observation.SortTargets(targets)
+		for _, t := range targets {
+			for _, v := range []int64{int64(t.Protocol), int64(t.Port), int64(t.Class), t.Packets, t.Bytes, t.TCP, t.SYN, t.UDP, t.ICMP} {
+				out = binary.AppendUvarint(out, uint64(v))
+			}
 		}
 	}
 	return out
@@ -87,9 +109,12 @@ func decodeSample(id, node, ip string, window int64, raw []byte) (observation.Sa
 		if legacy.ID != id || legacy.Node != node || legacy.IP != ip || legacy.Window != window {
 			return s, errPayload
 		}
+		if legacy.Details != nil {
+			observation.SortTargets(legacy.Details.Targets)
+		}
 		return legacy, nil
 	}
-	if len(raw) < 4 || !bytes.Equal(raw[:3], sampleMagic) || raw[3]&^byte(3) != 0 {
+	if len(raw) < 4 || !bytes.Equal(raw[:2], sampleMagic[:2]) || (raw[2] != 1 && raw[2] != 2) || raw[3]&^byte(3) != 0 {
 		return s, errPayload
 	}
 	flags := raw[3]
@@ -138,6 +163,34 @@ func decodeSample(id, node, ip string, window int64, raw []byte) (observation.Sa
 			return s, errPayload
 		}
 		s.Evidence.Ports = int(n)
+	}
+	if raw[2] == 2 {
+		detail := &observation.Details{Traffic: observation.Traffic{Unknown: d.unsigned(), Inbound: d.unsigned(), Reply: d.unsigned()}}
+		partial := d.unsigned()
+		count := d.unsigned()
+		if partial > 1 || count > observation.MaxTargets {
+			return s, errPayload
+		}
+		detail.Partial = partial == 1
+		for i := int64(0); i < count; i++ {
+			protocol, port, class := d.unsigned(), d.unsigned(), d.unsigned()
+			if protocol > 255 || port > 65535 || class > 2 {
+				return s, errPayload
+			}
+			t := observation.Target{Protocol: uint8(protocol), Port: uint16(port), Class: observation.Class(class)}
+			t.Packets = d.unsigned()
+			t.Bytes = d.unsigned()
+			t.TCP = d.unsigned()
+			t.SYN = d.unsigned()
+			t.UDP = d.unsigned()
+			t.ICMP = d.unsigned()
+			detail.Targets = append(detail.Targets, t)
+		}
+		observation.SortTargets(detail.Targets)
+		s.Details = detail
+		if e := s.ValidateDetails(); e != nil {
+			return s, e
+		}
 	}
 	if d.err != nil || len(d.data) != 0 {
 		return s, errPayload

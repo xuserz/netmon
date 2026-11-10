@@ -37,11 +37,12 @@ type Evidence struct {
 	Ports int   `json:"syn_ports"`
 }
 type Sample struct {
-	ID     string `json:"id"`
-	Node   string `json:"node"`
-	Name   string `json:"name"`
-	IP     string `json:"ip"`
-	Window int64  `json:"window"`
+	Details *Details `json:"details,omitempty"`
+	ID      string   `json:"id"`
+	Node    string   `json:"node"`
+	Name    string   `json:"name"`
+	IP      string   `json:"ip"`
+	Window  int64    `json:"window"`
 	Counters
 	First    int64    `json:"first_seen"`
 	Last     int64    `json:"last_seen"`
@@ -51,6 +52,9 @@ type Sample struct {
 	Partial  bool     `json:"partial"`
 }
 type IP struct {
+	IntensityScore       int               `json:"intensity_suspicion"`
+	Correlation          *Correlation      `json:"correlation,omitempty"`
+	Traffic              Traffic           `json:"traffic"`
 	Providers            []providers.Match `json:"providers,omitempty"`
 	ProviderRevision     string            `json:"provider_revision,omitempty"`
 	ProviderDate         string            `json:"provider_date,omitempty"`
@@ -105,6 +109,9 @@ func (a Counters) Minus(b Counters) Counters {
 	return Counters{a.Packets - b.Packets, a.Bytes - b.Bytes, a.TCP - b.TCP, a.SYN - b.SYN, a.UDP - b.UDP, a.ICMP - b.ICMP}
 }
 func (s Sample) Validate(now time.Time, retention time.Duration) error {
+	if e := s.ValidateDetails(); e != nil {
+		return e
+	}
 	ip, e := netip.ParseAddr(s.IP)
 	if !ValidID(s.ID) || !ValidID(s.Node) || e != nil || ip.Zone() != "" || ip.Unmap().String() != s.IP || len(s.Name) > 128 || InvalidName(s.Name) {
 		return fmt.Errorf("invalid observation identity")
@@ -243,6 +250,27 @@ func (ip IP) DisplayTag() string {
 	}
 	return ip.Tag()
 }
+func (ip IP) TrafficLabel() string {
+	t := ip.Traffic
+	n := 0
+	result := "-"
+	if t.Unknown > 0 {
+		n++
+		result = "UNKNOWN"
+	}
+	if t.Inbound > 0 {
+		n++
+		result = "INBOUND"
+	}
+	if t.Reply > 0 {
+		n++
+		result = "REPLY"
+	}
+	if n > 1 {
+		return "MIXED"
+	}
+	return result
+}
 func (ip IP) Label() string {
 	var parts []string
 	if ip.ServerName != "" {
@@ -253,6 +281,9 @@ func (ip IP) Label() string {
 	}
 	for _, p := range ip.Providers {
 		parts = append(parts, p.Name+" ("+strings.ToUpper(p.Category)+")")
+	}
+	if class := ip.TrafficLabel(); class != "-" {
+		parts = append(parts, "["+class+"]")
 	}
 	if len(parts) == 0 {
 		return "-"

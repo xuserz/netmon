@@ -20,7 +20,7 @@ func TestSignerUsesBuiltArchiveBytesAndPinnedPublicKey(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, name), []byte("test artifact "+arch), 0600)
 	}
 	policy := filepath.Join(dir, "policy.json")
-	os.WriteFile(policy, []byte(`{"automatic":true,"compatibility":"network-v3-store-v1"}`), 0600)
+	os.WriteFile(policy, []byte(`{"automatic":true,"compatibility":"network-v4-details-v2"}`), 0600)
 	version := "build-20-1-aaaaaaaa"
 	if e := sign(dir, version, pub, policy, hex.EncodeToString(key.Seed())); e != nil {
 		t.Fatal(e)

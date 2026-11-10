@@ -149,7 +149,9 @@ and signs the actual built archives. A mismatched key fails publication.
 
 The maintainer declares compatibility in `packaging/update-policy.json` and
 `internal/release.Compatibility`. Incompatible storage/protocol migrations must
-use `automatic: false` and a new compatibility identifier. This is an explicit
+use a new compatibility identifier, which older-generation helpers refuse.
+Use `automatic: false` for releases requiring manual installation even within
+their declared compatibility generation. This is an explicit
 maintainer contract; the updater cannot infer whether arbitrary future code
 changes or migrations are reversible. Such releases remain visible as offers
 but require manual installation. Trust-key rotation likewise requires an
@@ -160,3 +162,5 @@ The first manual installation bootstraps trust from the chosen GitHub release.
 Later automatic installations require the locally pinned public key. Config/key
 files and their parent directories must be owned by root and not writable by
 group/others. Custom setups outside those constraints require manual updates.
+
+The current generation is `network-v4-details-v2`; see [forensic migration](forensics.md).

@@ -11,6 +11,8 @@ multiple servers with encrypted peer-to-peer synchronization.
 ## Features
 
 - Incoming IPv4/IPv6 packets, IP bytes, TCP SYN, UDP, and ICMP counters per source IP.
+- Incoming/reply/unknown classes and bounded port/protocol/node history.
+- Built-in cross-node scan detection and replicated incident evidence.
 - A **0–100 suspicion score**, with reasons and automatic decay.
 - Color terminal dashboard with live refresh, rankings, CPU, RAM, and loss diagnostics.
 - **Full nodes** store shared statistics in SQLite and synchronize with other full nodes.
@@ -91,6 +93,9 @@ that the server accepted a request or established a connection.
 
 ## Commands
 
+For [traffic classes, port history and incident evidence](docs/forensics.md), use
+`netmon show IP --since 24h --json` and `netmon incidents --since 168h`.
+
 ```sh
 netmon top                          # Live color dashboard; q quits
 netmon top --sort score             # Suspicion, highest first
@@ -138,7 +143,8 @@ and cache bounds.
 
 New network observations use a compact binary payload, with ID, node, IP and
 minute stored once in their existing SQL columns. Minute detail, counters, risk
-evidence and indexes remain intact; network v3 messages and CSV remain unchanged.
+evidence and indexes remain intact. Current telemetry uses v4; see
+[forensic history and migration](docs/forensics.md).
 Existing JSON observations are read alongside compact records. Updating the
 executable reduces growth of new history; reclaiming existing files is an explicit
 maintenance operation. See [lossless database compaction](docs/operations.md#compact-network-history)
@@ -278,6 +284,7 @@ publish static amd64 and arm64 release bundles.
 - [Configuration and capture scope](docs/configuration.md)
 - [Offline provider labels and catalog updates](docs/providers.md)
 - [Signed cluster updates and first-time setup](docs/updates.md)
+- [Traffic classes, port history and incident evidence](docs/forensics.md)
 - [Legacy DNS peer-to-peer clustering](docs/cluster.md)
 - [Operations and troubleshooting](docs/operations.md)
 - [Development and testing](docs/development.md)

@@ -81,6 +81,8 @@ func renderNetwork(s State, width, height int) string {
 		warning = " ! " + s.Error
 	} else if h.FlushError != "" {
 		warning = " ! " + h.FlushError
+	} else if h.AnalysisError != "" {
+		warning = " ! Incident analysis: " + h.AnalysisError
 	} else if h.Storage.Error != "" {
 		warning = " ! Storage metrics: " + h.Storage.Error
 	} else if h.NodeCacheEvictions > 0 {
@@ -169,7 +171,7 @@ func renderNetwork(s State, width, height int) string {
 		lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
 		return strings.Join(lines, "\r\n")
 	}
-	edge("IP ACTIVITY · sort " + s.Sort)
+	edge(fmt.Sprintf("IP ACTIVITY · sort %s · incidents %d · analysis lag %d", s.Sort, h.IncidentCount, h.AnalysisLag))
 	// Keep descriptions visible on narrow terminals; SYN gets its own
 	// column when the terminal has room. The per-IP detail remains complete.
 	ipWidth := min(39, max(15, inner/3))

@@ -96,6 +96,13 @@ func (s *Socket) Next() ([]byte, time.Time, error) {
 		if e != nil {
 			return nil, time.Time{}, e
 		}
+		s.Outgoing = false
+		if s.trackOutgoing {
+			if s.packetOffset+68 > s.blockEnd || binary.NativeEndian.Uint16(s.ring[s.packetOffset+26:]) < 68 {
+				return nil, time.Time{}, errors.New("missing packet direction metadata")
+			}
+			s.Outgoing = s.ring[s.packetOffset+packetHeaderSize+10] == unix.PACKET_OUTGOING
+		}
 		s.packets--
 		s.packetOffset = next
 		return data, at, nil

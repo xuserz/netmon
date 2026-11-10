@@ -25,7 +25,7 @@ import (
 	"netmon/internal/release"
 )
 
-const wireVersion = 3
+const wireVersion = 4
 const maxWire = 2 << 20
 
 type message struct {
@@ -169,7 +169,8 @@ func (t *transport) envelope() message {
 	}
 	return m
 }
-func (t *transport) validate(m message) error {
+func (t *transport) validate(m message, control ...bool) error {
+	legacy := len(control) > 0 && control[0] && m.Version == 3
 	if len(m.UpdateStatus.Blocked) > 128 || observation.InvalidName(m.UpdateStatus.Blocked) || len(m.UpdateStatus.Version) > 128 || len(m.UpdateStatus.Target) > 128 || len(m.UpdateStatus.State) > 32 || len(m.UpdateStatus.Error) > 256 || observation.InvalidName(m.UpdateStatus.Version+m.UpdateStatus.Target+m.UpdateStatus.State+m.UpdateStatus.Error) {
 		return errors.New("invalid update status")
 	}
@@ -182,7 +183,7 @@ func (t *transport) validate(m message) error {
 			return errors.New("invalid update lease")
 		}
 	}
-	if m.Version != wireVersion || m.Mode != "network" || m.PolicyVersion != observation.PolicyVersion || m.Policy != Policy(t.cfg) || m.Retention != int64(t.cfg.Storage.Retention/time.Second) {
+	if (m.Version != wireVersion && !legacy) || m.Mode != "network" || m.PolicyVersion != observation.PolicyVersion || m.Policy != Policy(t.cfg) || m.Retention != int64(t.cfg.Storage.Retention/time.Second) {
 		return errors.New("network mode, rating policy, or retention differs between nodes")
 	}
 	if m.ContactTTLSeconds != 0 && (m.ContactTTLSeconds < 15 || m.ContactTTLSeconds > 120) {
@@ -191,7 +192,7 @@ func (t *transport) validate(m message) error {
 	if m.Floor < 0 || m.Floor%60 != 0 || m.Floor > time.Now().Unix()+300 {
 		return errors.New("invalid storage floor")
 	}
-	if !observation.ValidID(m.Node) || len(m.Name) > 128 || observation.InvalidName(m.Name) || (m.Role != "full" && m.Role != "forward") || len(m.Peers) > config.MaxClusterPeers || len(m.Samples) > 128 {
+	if !observation.ValidID(m.Node) || len(m.Name) > 128 || observation.InvalidName(m.Name) || (m.Role != "full" && m.Role != "forward") || len(m.Peers) > config.MaxClusterPeers || len(m.Samples)+len(m.Incidents) > 128 {
 		return errors.New("invalid network peer message")
 	}
 	return nil
@@ -225,7 +226,7 @@ func (t *transport) request(ctx context.Context, p Peer, path string, m message)
 	if e = json.NewDecoder(io.LimitReader(result.Body, maxWire)).Decode(&response); e != nil {
 		return response, e
 	}
-	if e = t.validate(response); e != nil {
+	if e = t.validate(response, m.Heartbeat || path == "/v3/network/update-lease"); e != nil {
 		return response, e
 	}
 	if response.Role != "full" || result.TLS == nil || len(result.TLS.PeerCertificates) == 0 || result.TLS.PeerCertificates[0].Subject.CommonName != response.Node {
@@ -249,7 +250,7 @@ func (t *transport) send(ctx context.Context, items []pending) error {
 	}
 	for _, p := range peers {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		reply, e := t.request(requestCtx, p, "/v3/network/ingest", m)
+		reply, e := t.request(requestCtx, p, "/v4/network/ingest", m)
 		cancel()
 		p.Error = limitedError(e)
 		t.presence.deliveryTo(p.URL, time.Now(), e)
@@ -279,7 +280,7 @@ func (t *transport) sync(ctx context.Context) {
 			m.Page.Epoch = p.Epoch
 			m.Page.Cursor = p.Cursor
 			requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			reply, e := t.request(requestCtx, p, "/v3/network/exchange", m)
+			reply, e := t.request(requestCtx, p, "/v4/network/exchange", m)
 			cancel()
 			if e == nil {
 				if !observation.ValidID(reply.Epoch) || reply.Cursor < 0 || reply.Cursor > reply.Head || reply.Epoch == p.Epoch && reply.Cursor < p.Cursor {
@@ -319,13 +320,13 @@ func (t *transport) applyPage(ctx context.Context, previous Peer, reply message)
 	next.Cursor = reply.Cursor
 	next.Success = time.Now().Unix()
 	next.Error = ""
-	if e := t.store.mergePage(ctx, reply.Samples, &next, reply.Floor); e != nil {
+	if e := t.store.mergePage(ctx, reply.Samples, &next, reply.Floor, reply.Incidents); e != nil {
 		return previous, e
 	}
 	return next, nil
 }
 func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" || (r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v3/network/exchange" && r.URL.Path != "/v3/network/update-lease") {
+	if r.Method != "POST" || (r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v4/network/ingest" && r.URL.Path != "/v4/network/exchange" && r.URL.Path != "/v3/network/update-lease") {
 		http.NotFound(w, r)
 		return
 	}
@@ -343,7 +344,12 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid message", 400)
 		return
 	}
-	if e := t.validate(m); e != nil {
+	control := r.URL.Path == "/v3/network/update-lease" || (r.URL.Path == "/v3/network/ingest" && m.Heartbeat)
+	if r.URL.Path == "/v3/network/ingest" && !m.Heartbeat {
+		http.Error(w, "telemetry requires network protocol v4; upgrade every node", 409)
+		return
+	}
+	if e := t.validate(m, control); e != nil {
 		http.Error(w, e.Error(), 409)
 		return
 	}
@@ -355,7 +361,7 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "duplicate node identity or self connection", 409)
 		return
 	}
-	if m.Heartbeat && (r.URL.Path != "/v3/network/ingest" || len(m.Samples) != 0) {
+	if m.Heartbeat && ((r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v4/network/ingest") || len(m.Samples)+len(m.Incidents) != 0) {
 		http.Error(w, "heartbeat must be an empty ingest", 400)
 		return
 	}
@@ -367,6 +373,9 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		t.discover(m.Advertise)
 	}
 	reply := t.envelope()
+	if control {
+		reply.Version = m.Version
+	}
 	if r.URL.Path == "/v3/network/update-lease" {
 		coordinator, _ := config.PeerURL(t.cfg.Updates.Coordinator)
 		self, _ := config.PeerURL(t.cfg.Cluster.Advertise)
@@ -385,7 +394,11 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(reply)
 		return
 	}
-	if r.URL.Path == "/v3/network/ingest" {
+	if r.URL.Path == "/v4/network/ingest" {
+		if len(m.Incidents) > 0 {
+			http.Error(w, "incidents are exchanged by storage replicas", 400)
+			return
+		}
 		for _, s := range m.Samples {
 			if s.Node != m.Node {
 				http.Error(w, "ingest source differs from certificate", 403)

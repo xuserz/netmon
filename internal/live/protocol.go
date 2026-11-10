@@ -65,6 +65,11 @@ type NetworkNode struct {
 }
 
 type Health struct {
+	IncidentCount      int64           `json:"incidents"`
+	AnalysisLag        int64           `json:"analysis_lag"`
+	AnalysisError      string          `json:"analysis_error,omitempty"`
+	TrackedFlows       int             `json:"tracked_flows"`
+	FlowEvictions      uint64          `json:"flow_evictions"`
 	BuildVersion       string          `json:"build_version,omitempty"`
 	Update             release.Status  `json:"update,omitempty"`
 	NodeCacheEvictions uint64          `json:"node_cache_evictions"`
@@ -133,22 +138,23 @@ type Request struct {
 	Limit int    `json:"limit,omitempty"`
 }
 type Response struct {
-	UpdateOffer     *release.Offer     `json:"update_offer,omitempty"`
-	NetworkNodes    []NetworkNode      `json:"network_nodes,omitempty"`
-	Network         bool               `json:"network"`
-	NetworkIPs      []observation.IP   `json:"network_ips,omitempty"`
-	NetworkTotals   observation.Totals `json:"network_totals"`
-	Partial         bool               `json:"partial"`
-	Cluster         bool               `json:"cluster"`
-	Sort            string             `json:"sort,omitempty"`
-	Activity        []ActivityClient   `json:"activity,omitempty"`
-	ActivityPartial bool               `json:"activity_partial"`
-	Health          Health             `json:"health"`
-	Totals          store.Totals       `json:"totals"`
-	Clients         []store.Client     `json:"clients,omitempty"`
-	Error           string             `json:"error,omitempty"`
-	Source          string             `json:"source"`
-	SnapshotAt      time.Time          `json:"snapshot_at"`
+	Profile         *observation.Profile `json:"profile,omitempty"`
+	UpdateOffer     *release.Offer       `json:"update_offer,omitempty"`
+	NetworkNodes    []NetworkNode        `json:"network_nodes,omitempty"`
+	Network         bool                 `json:"network"`
+	NetworkIPs      []observation.IP     `json:"network_ips,omitempty"`
+	NetworkTotals   observation.Totals   `json:"network_totals"`
+	Partial         bool                 `json:"partial"`
+	Cluster         bool                 `json:"cluster"`
+	Sort            string               `json:"sort,omitempty"`
+	Activity        []ActivityClient     `json:"activity,omitempty"`
+	ActivityPartial bool                 `json:"activity_partial"`
+	Health          Health               `json:"health"`
+	Totals          store.Totals         `json:"totals"`
+	Clients         []store.Client       `json:"clients,omitempty"`
+	Error           string               `json:"error,omitempty"`
+	Source          string               `json:"source"`
+	SnapshotAt      time.Time            `json:"snapshot_at"`
 }
 
 func Path(db string) string { return db + ".sock" }

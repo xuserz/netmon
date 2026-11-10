@@ -86,6 +86,7 @@ func newRuntime(c config.Config) (*Runtime, error) {
 		return nil, e
 	}
 	r.collector = newCollector(node, name, c.MaxActivityIPs, Policy(c), r.queue)
+	r.collector.detailTargets = c.Network.DetailTargets
 	r.health.ClusterNode = node
 	r.health.ClusterEnabled = c.Cluster.Enabled
 	r.report.Store(&report{rows: map[string][]observation.IP{}, local: map[string][]observation.IP{}, totals: map[string]observation.Totals{}, at: time.Now()})
@@ -194,6 +195,36 @@ func (r *Runtime) start() {
 			}
 		}
 	}()
+	if r.disk != nil {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			ticker := time.NewTicker(r.cfg.Network.AnalysisInterval)
+			defer ticker.Stop()
+			for {
+				work, stop := context.WithTimeout(ctx, r.cfg.Network.AnalysisBudget)
+				_, err := r.disk.Analyze(work, 128)
+				stop()
+				countCtx, countStop := context.WithTimeout(ctx, 200*time.Millisecond)
+				r.healthMu.Lock()
+				count, lag := r.health.IncidentCount, r.health.AnalysisLag
+				r.healthMu.Unlock()
+				_ = r.disk.r.DB.QueryRowContext(countCtx, "SELECT count(*) FROM net_incidents").Scan(&count)
+				_ = r.disk.r.DB.QueryRowContext(countCtx, "SELECT max(0,(SELECT sequence FROM net_meta WHERE id=1)-sequence) FROM net_analysis WHERE id=1").Scan(&lag)
+				countStop()
+				r.healthMu.Lock()
+				r.health.IncidentCount = count
+				r.health.AnalysisLag = lag
+				r.health.AnalysisError = limitedError(err)
+				r.healthMu.Unlock()
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 	if r.disk != nil {
 		r.wg.Add(1)
 		go func() {
@@ -361,7 +392,11 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 			health.ClusterLastSync = time.Unix(p.Success, 0)
 		}
 	}
-	return live.Response{UpdateOffer: r.transport.updates.snapshot(), Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
+	var profile *observation.Profile
+	if req.Op == "show" && req.Local {
+		profile = r.collector.profile(req.IP)
+	}
+	return live.Response{Profile: profile, UpdateOffer: r.transport.updates.snapshot(), Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
 }
 func (r *Runtime) close() {
 	if r.cancel != nil {
@@ -408,7 +443,11 @@ func Run(ctx context.Context, c config.Config) error {
 	defer func() { runtime.collector.flush(); runtime.close() }()
 	var sock *capture.Socket
 	if c.Network.Capture {
-		sock, e = capture.OpenNetwork(c.Interface, c.SocketBufferMB)
+		if c.Network.Classify {
+			sock, e = capture.OpenNetworkTracking(c.Interface, c.SocketBufferMB)
+		} else {
+			sock, e = capture.OpenNetwork(c.Interface, c.SocketBufferMB)
+		}
 		if e != nil {
 			return e
 		}
@@ -428,6 +467,7 @@ func Run(ctx context.Context, c config.Config) error {
 		<-ctx.Done()
 		return nil
 	}
+	flows := newFlowTracker(c.Network.MaxTrackedFlows, c.Network.FlowTimeout)
 	nextFlush := time.Now().Add(c.FlushInterval)
 	nextStats := time.Now()
 	excludes := runtime.transport.excludePorts()
@@ -455,13 +495,26 @@ func Run(ctx context.Context, c config.Config) error {
 		}
 		now := time.Now()
 		if len(data) > 0 {
-			runtime.received.Add(1)
 			p, e := observation.Decode(data)
-			if e != nil {
-				runtime.malformed.Add(1)
-			} else if (!destination.IsValid() || p.Destination == destination) && (len(watch) == 0 || watch[p.Port]) && !configuredExclude[p.Port] && !(p.Protocol == 6 && (excludes[p.Port] || excludes[p.SourcePort])) {
-				runtime.collector.add(p, at)
-				runtime.lastPacket.Store(at.Unix())
+			if sock.Outgoing {
+				if e == nil {
+					flows.Observe(p, true, at)
+				}
+			} else {
+				runtime.received.Add(1)
+				if e != nil {
+					runtime.malformed.Add(1)
+				} else {
+					if c.Network.Classify {
+						p.Class = flows.Observe(p, false, at)
+					}
+					if (!destination.IsValid() || p.Destination == destination) && (len(watch) == 0 || watch[p.Port]) && !configuredExclude[p.Port] && !(p.Protocol == 6 && (excludes[p.Port] || excludes[p.SourcePort])) {
+						if !c.Network.ExcludeReplies || p.Class != observation.Reply {
+							runtime.collector.add(p, at)
+						}
+						runtime.lastPacket.Store(at.Unix())
+					}
+				}
 			}
 		}
 		if !now.Before(nextFlush) {
@@ -470,7 +523,12 @@ func Run(ctx context.Context, c config.Config) error {
 		}
 		if !now.Before(nextStats) {
 			drops, e := sock.Drops()
+			if drops > 0 {
+				flows.uncertainUntil = now.Add(flows.ttl)
+			}
 			runtime.healthMu.Lock()
+			runtime.health.TrackedFlows = len(flows.index)
+			runtime.health.FlowEvictions = flows.evictions
 			runtime.health.CaptureUpdated = now
 			runtime.health.KernelDrops += uint64(drops)
 			runtime.healthMu.Unlock()

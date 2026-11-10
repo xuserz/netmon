@@ -33,6 +33,7 @@ func Policy(c config.Config) observation.Policy {
 }
 
 type disk struct {
+	journal     bool
 	w, r        *store.Store
 	mu          sync.Mutex
 	node, epoch string
@@ -49,11 +50,12 @@ type Peer struct {
 	Error   string `json:"error"`
 }
 type Page struct {
-	Epoch   string               `json:"epoch"`
-	Cursor  int64                `json:"cursor"`
-	Head    int64                `json:"head"`
-	Floor   int64                `json:"storage_floor"`
-	Samples []observation.Sample `json:"samples"`
+	Incidents []observation.Incident `json:"incidents,omitempty"`
+	Epoch     string                 `json:"epoch"`
+	Cursor    int64                  `json:"cursor"`
+	Head      int64                  `json:"head"`
+	Floor     int64                  `json:"storage_floor"`
+	Samples   []observation.Sample   `json:"samples"`
 }
 
 func openDisk(c config.Config, write bool) (*disk, error) {
@@ -81,6 +83,7 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 			`CREATE INDEX IF NOT EXISTS net_changes ON net_observations(version)`,
 			`CREATE INDEX IF NOT EXISTS net_ip_observations ON net_observations(ip,priority DESC)`,
 			`CREATE INDEX IF NOT EXISTS net_expiry ON net_observations(window)`,
+			`CREATE INDEX IF NOT EXISTS net_ip_windows ON net_observations(ip,window)`,
 			`CREATE TABLE IF NOT EXISTS net_storage(id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,evicted INTEGER NOT NULL)`,
 			`INSERT OR IGNORE INTO net_storage VALUES(1,0,0)`,
 			`CREATE TABLE IF NOT EXISTS net_totals(id INTEGER PRIMARY KEY CHECK(id=1),ips INTEGER NOT NULL,packets INTEGER NOT NULL,bytes INTEGER NOT NULL,tcp INTEGER NOT NULL,syn INTEGER NOT NULL,udp INTEGER NOT NULL,icmp INTEGER NOT NULL)`,
@@ -90,6 +93,11 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 			`CREATE INDEX IF NOT EXISTS net_rank_packets ON net_ips(packets DESC,ip)`,
 			`CREATE INDEX IF NOT EXISTS net_rank_bytes ON net_ips(bytes DESC,ip)`,
 			`CREATE INDEX IF NOT EXISTS net_rank_syn ON net_ips(syn DESC,ip)`,
+			`CREATE TABLE IF NOT EXISTS net_analysis(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS net_incidents(id TEXT PRIMARY KEY,ip TEXT NOT NULL,kind TEXT NOT NULL,bucket INTEGER NOT NULL,last INTEGER NOT NULL,version INTEGER NOT NULL,priority REAL NOT NULL,payload BLOB NOT NULL) WITHOUT ROWID`,
+			`CREATE INDEX IF NOT EXISTS net_incident_changes ON net_incidents(version)`,
+			`CREATE INDEX IF NOT EXISTS net_incident_recent ON net_incidents(last DESC,id)`,
+			`CREATE INDEX IF NOT EXISTS net_incident_ip ON net_incidents(ip,priority DESC)`,
 			`CREATE TABLE IF NOT EXISTS net_peers(url TEXT PRIMARY KEY,node TEXT NOT NULL DEFAULT '',name TEXT NOT NULL DEFAULT '',epoch TEXT NOT NULL DEFAULT '',cursor INTEGER NOT NULL DEFAULT 0,success INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '') WITHOUT ROWID`,
 		} {
 			if _, e = tx.Exec(q); e != nil {
@@ -98,6 +106,11 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 		}
 		policy, _ := json.Marshal(s.policy)
 		if _, e = tx.Exec("INSERT OR IGNORE INTO net_meta VALUES(1,?,?,0,?,?)", observation.ID(), observation.ID(), string(policy), int64(c.Storage.Retention/time.Second)); e != nil {
+			return nil, e
+		}
+		// A newly introduced journal starts at the existing frontier. Do not
+		// delay live detection by re-analyzing years of pre-feature history.
+		if _, e = tx.Exec("INSERT OR IGNORE INTO net_analysis SELECT 1,sequence FROM net_meta WHERE id=1"); e != nil {
 			return nil, e
 		}
 		if e = tx.Commit(); e != nil {
@@ -133,6 +146,11 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 	} else {
 		s.r = w
 	}
+	var tables int
+	if e = w.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='net_incidents'").Scan(&tables); e != nil {
+		return nil, e
+	}
+	s.journal = tables > 0
 	ok = true
 	return s, nil
 }
@@ -158,6 +176,11 @@ func mergeSample(old, next observation.Sample, p observation.Policy) (observatio
 		if old.Node != next.Node || old.IP != next.IP || old.Window != next.Window {
 			return old, errors.New("observation identity reused for a different source/window")
 		}
+		details, e := observation.MergeDetails(old.Details, next.Details)
+		if e != nil {
+			return old, e
+		}
+		next.Details = details
 		next.Name = min(old.Name, next.Name)
 		next.Counters = next.Counters.Max(old.Counters)
 		next.First = min(old.First, next.First)
@@ -175,7 +198,19 @@ func mergeSample(old, next observation.Sample, p observation.Policy) (observatio
 func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer) error {
 	return s.mergePage(ctx, items, peer, 0)
 }
-func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *Peer, floor int64) error {
+func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, incidentPages ...[]observation.Incident) error {
+	var incidents []observation.Incident
+	for _, page := range incidentPages {
+		incidents = append(incidents, page...)
+	}
+	if len(items)+len(incidents) > 128 {
+		return errors.New("network page exceeds 128 records")
+	}
+	for _, v := range incidents {
+		if _, e := normalizeIncident(v, s.policy); e != nil {
+			return e
+		}
+	}
 	if floor < 0 || floor%60 != 0 || floor > time.Now().Unix()+300 {
 		return errors.New("invalid storage floor")
 	}
@@ -192,10 +227,14 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 		if e := item.Validate(now, s.retention); e != nil {
 			return e
 		}
-		if _, e := mergeSample(identities[item.ID], item, s.policy); e != nil {
+		merged, e := mergeSample(identities[item.ID], item, s.policy)
+		if e != nil {
 			return e
 		}
-		identities[item.ID] = item
+		if e = merged.Validate(now, s.retention); e != nil {
+			return e
+		}
+		identities[item.ID] = merged
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -205,7 +244,7 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 
 	for {
 		var changed bool
-		e := s.mergeOnce(ctx, items, peer, floor, &changed)
+		e := s.mergeOnce(ctx, items, peer, floor, &changed, incidents)
 		if e == nil {
 			// Reserve space after a committed change; stale/no-op replay must never
 			// trigger new eviction simply because this replica is near capacity.
@@ -255,7 +294,7 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 		}
 	}
 }
-func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, changed *bool) error {
+func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, changed *bool, incidentPages ...[]observation.Incident) error {
 	if len(items) > 128 {
 		return errors.New("network page exceeds 128 observations")
 	}
@@ -344,6 +383,11 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 			return errors.New("network counter overflow; transaction was not applied")
 		}
 		oldCounters := row.Counters
+		trafficDelta := next.Traffic().Minus(old.Traffic())
+		if trafficDelta.Unknown < 0 || trafficDelta.Inbound < 0 || trafficDelta.Reply < 0 {
+			return errors.New("inconsistent traffic classification snapshot")
+		}
+		row.Traffic = row.Traffic.Plus(trafficDelta)
 		row.Counters = row.Counters.Plus(delta)
 		totals.Counters = totals.Counters.Plus(row.Counters.Minus(oldCounters))
 		if absent {
@@ -359,13 +403,26 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 		if s.policy.Better(next.Evidence, evidence) {
 			evidence = next.Evidence
 		}
-		ev, _ := json.Marshal(evidence)
+		if absent {
+			row.Correlation, e = loadCorrelation(ctx, tx, row.IP)
+			if e != nil {
+				return e
+			}
+		}
+		ev := marshalIPState(evidence, row.Traffic, row.Correlation)
 		seq++
 		if _, e = stmts[1].ExecContext(ctx, next.ID, next.Node, next.IP, next.Window, seq, s.policy.Priority(next.Evidence), encoded); e != nil {
 			return e
 		}
-		if _, e = stmts[3].ExecContext(ctx, row.IP, row.Packets, row.Bytes, row.TCP, row.SYN, row.UDP, row.ICMP, row.First, row.Last, row.PeakPPS, ev, s.policy.Priority(evidence), row.Partial); e != nil {
+		if _, e = stmts[3].ExecContext(ctx, row.IP, row.Packets, row.Bytes, row.TCP, row.SYN, row.UDP, row.ICMP, row.First, row.Last, row.PeakPPS, ev, max(s.policy.Priority(evidence), row.Correlation.Priority(s.policy)), row.Partial); e != nil {
 			return e
+		}
+	}
+	for _, page := range incidentPages {
+		for _, v := range page {
+			if e := writeIncident(ctx, tx, v, s.policy, &seq, incidentFloor(s.retention, floor)); e != nil {
+				return e
+			}
 		}
 	}
 	if e = writeTotals(ctx, tx, totals); e != nil {
@@ -399,8 +456,24 @@ func scanIP(row interface{ Scan(...any) error }, policy observation.Policy, now 
 	if e != nil {
 		return ip, evidence, e
 	}
+	var state ipState
+	if e := json.Unmarshal(raw, &state); e != nil {
+		return ip, evidence, e
+	}
+	if state.Traffic != nil {
+		ip.Traffic = *state.Traffic
+	} else {
+		ip.Traffic = observation.Traffic{Unknown: ip.Packets}
+	}
 	ip.Score, ip.Reasons = policy.Score(evidence, now)
+	ip.IntensityScore = ip.Score
+	ip.Correlation = state.Correlation
 	ip.EvidenceAt = evidence.At
+	if correlated := ip.Correlation.Decay(policy, now); correlated > ip.Score {
+		ip.Score = correlated
+		ip.EvidenceAt = ip.Correlation.At
+		ip.Reasons = append(ip.Reasons, ip.Correlation.Reason+"; incident "+ip.Correlation.ID)
+	}
 	return ip, evidence, nil
 }
 func rank(sort string) (string, error) {
@@ -482,37 +555,58 @@ func (s *disk) Page(ctx context.Context, epoch string, after int64) (Page, error
 	if s.retention > 0 {
 		minimum = max(minimum, time.Now().Add(-s.retention).Unix()-59)
 	}
-	rows, e := tx.QueryContext(ctx, "SELECT "+sampleColumns+",version FROM net_observations WHERE version>? AND version<=? AND window>=? ORDER BY version LIMIT 128", after, page.Head, minimum)
+	query := "SELECT 0 AS kind," + sampleColumns + ",version FROM net_observations WHERE version>? AND version<=? AND window>=?"
+	args := []any{after, page.Head, minimum}
+	if s.journal {
+		query += " UNION ALL SELECT 1,id,'',ip,bucket,payload,version FROM net_incidents WHERE version>? AND version<=? AND last>=?"
+		args = append(args, after, page.Head, minimum)
+	}
+	query += " ORDER BY version LIMIT 128"
+	rows, e := tx.QueryContext(ctx, query, args...)
 	if e != nil {
 		return page, e
 	}
 	defer rows.Close()
 	page.Cursor = after
 	size := 0
+	count := 0
 	for rows.Next() {
-		var raw []byte
+		var kind int
 		var id, node, ip string
 		var window, version int64
-		if e = rows.Scan(&id, &node, &ip, &window, &raw, &version); e != nil {
+		var raw, wire []byte
+		if e = rows.Scan(&kind, &id, &node, &ip, &window, &raw, &version); e != nil {
 			return page, e
 		}
-		sample, err := decodeSample(id, node, ip, window, raw)
-		if err != nil {
-			return page, err
+		if kind == 0 {
+			v, e := decodeSample(id, node, ip, window, raw)
+			if e != nil {
+				return page, e
+			}
+			wire, _ = json.Marshal(v)
+			if size+len(wire) > 1<<20 && count > 0 {
+				return page, nil
+			}
+			page.Samples = append(page.Samples, v)
+		} else {
+			v, e := decodeIncident(raw)
+			if e != nil {
+				return page, e
+			}
+			wire, _ = json.Marshal(v)
+			if size+len(wire) > 1<<20 && count > 0 {
+				return page, nil
+			}
+			page.Incidents = append(page.Incidents, v)
 		}
-		wire, _ := json.Marshal(sample)
-		if size+len(wire) > 1<<20 && len(page.Samples) > 0 {
-			return page, nil
-		}
-
-		page.Samples = append(page.Samples, sample)
 		size += len(wire)
+		count++
 		page.Cursor = version
 	}
 	if e = rows.Err(); e != nil {
 		return page, e
 	}
-	if len(page.Samples) < 128 {
+	if count < 128 {
 		page.Cursor = page.Head
 	}
 	return page, nil
@@ -554,7 +648,16 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 	}
 	if capacity {
 		var oldest int64
-		e = tx.QueryRowContext(ctx, "SELECT window FROM net_observations ORDER BY window LIMIT 1").Scan(&oldest)
+		oldestQuery := "SELECT min(window) FROM net_observations"
+		if s.journal {
+			oldestQuery = "SELECT min(t) FROM (SELECT min(window) t FROM net_observations UNION ALL SELECT min(last/60*60) t FROM net_incidents)"
+		}
+		var oldestValue sql.NullInt64
+		e = tx.QueryRowContext(ctx, oldestQuery).Scan(&oldestValue)
+		if e == nil && !oldestValue.Valid {
+			return 0, nil
+		}
+		oldest = oldestValue.Int64
 		if errors.Is(e, sql.ErrNoRows) {
 			return 0, nil
 		}
@@ -577,12 +680,47 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 			}
 		}
 	}
+	removedEvents := 0
+	if s.journal {
+		eventRows, err := tx.QueryContext(ctx, "SELECT id,ip FROM net_incidents WHERE last<? ORDER BY last,id LIMIT 128", minimum)
+		if err != nil {
+			return 0, err
+		}
+		var ids []string
+		eventIPs := map[string]bool{}
+		for eventRows.Next() {
+			var id, ip string
+			if err = eventRows.Scan(&id, &ip); err != nil {
+				eventRows.Close()
+				return 0, err
+			}
+			ids = append(ids, id)
+			eventIPs[ip] = true
+		}
+		err = eventRows.Err()
+		eventRows.Close()
+		if err != nil {
+			return 0, err
+		}
+		for _, id := range ids {
+			if _, err = tx.ExecContext(ctx, "DELETE FROM net_incidents WHERE id=?", id); err != nil {
+				return 0, err
+			}
+		}
+		removedEvents = len(ids)
+		for ip := range eventIPs {
+			if err = refreshCorrelation(ctx, tx, ip, s.policy); err != nil {
+				return 0, err
+			}
+		}
+	}
 	rows, e := tx.QueryContext(ctx, "SELECT "+sampleColumns+" FROM net_observations WHERE window<? ORDER BY window,id LIMIT 128", minimum)
 	if e != nil {
 		return 0, e
 	}
 	var ids []string
 	expired := map[string]observation.Counters{}
+	expiredTraffic := map[string]observation.Traffic{}
 	for rows.Next() {
 		item, err := scanSample(rows)
 		if err != nil {
@@ -591,6 +729,7 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		}
 		ids = append(ids, item.ID)
 		expired[item.IP] = expired[item.IP].Plus(item.Counters)
+		expiredTraffic[item.IP] = expiredTraffic[item.IP].Plus(item.Traffic())
 	}
 
 	e = rows.Err()
@@ -599,7 +738,7 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		return 0, e
 	}
 	if len(ids) == 0 {
-		return 0, nil
+		return removedEvents, tx.Commit()
 	}
 	totals, e := readTotals(ctx, tx)
 	if e != nil {
@@ -629,8 +768,12 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		risk, _ := json.Marshal(best.Evidence)
-		if _, e = tx.ExecContext(ctx, "UPDATE net_ips SET packets=?,bytes=?,tcp=?,syn=?,udp=?,icmp=?,evidence=?,priority=? WHERE ip=?", next.Packets, next.Bytes, next.TCP, next.SYN, next.UDP, next.ICMP, risk, s.policy.Priority(best.Evidence), ip); e != nil {
+		correlation, e := loadCorrelation(ctx, tx, ip)
+		if e != nil {
+			return 0, e
+		}
+		risk := marshalIPState(best.Evidence, row.Traffic.Minus(expiredTraffic[ip]), correlation)
+		if _, e = tx.ExecContext(ctx, "UPDATE net_ips SET packets=?,bytes=?,tcp=?,syn=?,udp=?,icmp=?,evidence=?,priority=? WHERE ip=?", next.Packets, next.Bytes, next.TCP, next.SYN, next.UDP, next.ICMP, risk, max(s.policy.Priority(best.Evidence), correlation.Priority(s.policy)), ip); e != nil {
 			return 0, e
 		}
 	}
@@ -640,7 +783,7 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 	if _, e = tx.ExecContext(ctx, "UPDATE net_storage SET evicted=evicted+? WHERE id=1", len(ids)); e != nil {
 		return 0, e
 	}
-	return len(ids), tx.Commit()
+	return len(ids) + removedEvents, tx.Commit()
 }
 func readTotals(ctx context.Context, tx *sql.Tx) (observation.Totals, error) {
 	var t observation.Totals

@@ -200,6 +200,59 @@ class NetworkTests(unittest.TestCase):
         self.assertIn("Suspicion: 35/100", result.stdout)
         self.assertIn("incoming IP packets/s", result.stdout)
 
+    def test_distributed_scan_port_history_incident_replication_and_restart(self):
+        a_port, b_port = self.reserve(), self.reserve()
+        targets = set()
+        while len(targets) < 8:
+            port = self.reserve()
+            if port not in (a_port, b_port, self.port):
+                targets.add(port)
+        targets = sorted(targets)
+        a = self.node("scan-a", "full", a_port, [], capture=True)
+        b = self.node("scan-b", "full", b_port, [f"https://127.0.0.1:{a_port}"], capture=True)
+        for node, ports in ((a, targets[:4]), (b, targets[4:])):
+            text = node["config"].read_text().replace(f"  ports: [{self.port}]", f"  ports: {json.dumps(ports)}")
+            node["config"].write_text(text)
+            self.start(node)
+        def scan():
+            for port in targets:
+                for _ in range(2):
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+                        client.settimeout(.5)
+                        client.bind(("127.0.0.2", 0))
+                        client.connect_ex(("127.0.0.1", port))
+        # Avoid splitting the fixed correlation window at its wall-clock edge.
+        if time.time() % 600 > 598:
+            time.sleep(2)
+        scan()
+        self.wait_for(lambda: self.total(a) >= 16 and self.total(b) >= 16)
+        def events(node):
+            result = self.command(node, "incidents", "--ip", "127.0.0.2", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        journal = self.wait_for(lambda: (rows if (rows := events(a)) else False))
+        incident = next(row for row in journal if row["kind"] == "distributed_scan")
+        self.assertEqual(incident["nodes"], 2)
+        self.assertEqual(len(incident["ports"]), 8)
+        self.assertGreaterEqual(incident["syn"], 16)
+        self.wait_for(lambda: any(row["id"] == incident["id"] for row in events(b)))
+        result = self.command(a, "show", "127.0.0.2", "--since", "24h", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        details = json.loads(result.stdout)
+        self.assertEqual(details["summary"]["intensity_suspicion"], 0)
+        self.assertGreater(details["summary"]["suspicion"], 0)
+        self.assertEqual(len(details["profile"]["nodes"]), 2)
+        self.assertEqual(len(details["profile"]["targets"]), 8)
+        self.assertGreaterEqual(details["profile"]["traffic"]["inbound"], 16)
+        result = self.command(a, "incidents", "--id", incident["id"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Node ", result.stdout)
+        self.stop(b)
+        offline = events(b)
+        self.assertTrue(any(row["id"] == incident["id"] for row in offline))
+        self.start(b)
+        self.wait_for(lambda: any(row["id"] == incident["id"] for row in events(b)))
+
     def test_ipv6_udp_and_tcp_syn_are_observed(self):
         node = self.node("ipv6", "full", self.reserve(), [], capture=True)
         self.start(node)

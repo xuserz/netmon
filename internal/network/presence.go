@@ -262,6 +262,7 @@ func (t *transport) probe(ctx context.Context) {
 	}
 	m := t.envelope()
 	m.Heartbeat = true
+	m.Version = 3
 	slots := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for _, peer := range t.list() {

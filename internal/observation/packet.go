@@ -7,12 +7,15 @@ import (
 )
 
 type Packet struct {
-	Source, Destination netip.Addr
-	Length              int
-	Protocol            uint8
-	SourcePort, Port    uint16
-	SYN                 bool
-	Fragment            bool
+	EchoRequest, EchoReply bool
+	EchoID                 uint16
+	Class                  Class
+	Source, Destination    netip.Addr
+	Length                 int
+	Protocol               uint8
+	SourcePort, Port       uint16
+	SYN                    bool
+	Fragment               bool
 }
 
 var ErrPacket = errors.New("malformed or unsupported IP packet")
@@ -122,6 +125,14 @@ func transport(p Packet, b []byte, off int, fragment bool) (Packet, error) {
 		p.SourcePort = binary.BigEndian.Uint16(b[off:])
 		p.Port = binary.BigEndian.Uint16(b[off+2:])
 		p.SYN = b[off+13]&0x12 == 0x02
+	case 1, 58:
+		if off+8 <= len(b) && b[off+1] == 0 {
+			p.EchoRequest = (p.Protocol == 1 && b[off] == 8) || (p.Protocol == 58 && b[off] == 128)
+			p.EchoReply = (p.Protocol == 1 && b[off] == 0) || (p.Protocol == 58 && b[off] == 129)
+			if p.EchoRequest || p.EchoReply {
+				p.EchoID = binary.BigEndian.Uint16(b[off+4:])
+			}
+		}
 	case 17:
 		if off+8 > len(b) {
 			if p.Fragment {

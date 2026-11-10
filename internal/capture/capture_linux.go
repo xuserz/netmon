@@ -13,6 +13,8 @@ import (
 )
 
 type Socket struct {
+	Outgoing                          bool
+	trackOutgoing                     bool
 	fd                                int
 	Interface                         string
 	BufferBytes                       int
@@ -34,7 +36,13 @@ func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 func OpenNetwork(name string, bufferMB int) (*Socket, error) {
 	return openFiltered(name, bufferMB, NetworkFilter())
 }
+func OpenNetworkTracking(name string, bufferMB int) (*Socket, error) {
+	return openTracking(name, bufferMB, TrackingFilter(), true)
+}
 func openFiltered(name string, bufferMB int, filter []unix.SockFilter) (*Socket, error) {
+	return openTracking(name, bufferMB, filter, false)
+}
+func openTracking(name string, bufferMB int, filter []unix.SockFilter, tracking bool) (*Socket, error) {
 	iface, e := net.InterfaceByName(name)
 	if e != nil {
 		if errors.Is(e, unix.EPERM) || errors.Is(e, unix.EACCES) {
@@ -56,14 +64,18 @@ func openFiltered(name string, bufferMB int, filter []unix.SockFilter) (*Socket,
 	if e != nil {
 		return nil, fmt.Errorf("AF_PACKET (requires CAP_NET_RAW): %w", e)
 	}
-	s := &Socket{fd: fd, Interface: name}
+	s := &Socket{fd: fd, Interface: name, trackOutgoing: tracking}
 	ok := false
 	defer func() {
 		if !ok {
 			s.Close()
 		}
 	}()
-	if e = unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1); e != nil {
+	ignore := 1
+	if tracking {
+		ignore = 0
+	}
+	if e = unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, ignore); e != nil {
 		return nil, e
 	}
 	if e = s.setupRing(bufferMB); e != nil {

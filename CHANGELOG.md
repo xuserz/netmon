@@ -59,6 +59,16 @@ tags retroactively.
 
 ### Added
 
+- Built-in INBOUND/REPLY/UNKNOWN header correlation, optional reply exclusion,
+  bounded per-IP/node/minute target details, time-range show and JSON output.
+- Incremental fixed-window scan/flood detection, replicated incident evidence,
+  replay-safe fact IDs, forensic commands, decaying correlation in IP rankings,
+  capacity cleanup and compact-copy verification. No external monitoring stack,
+  metrics exporter, alerts or notifications.
+- Telemetry v4 / detailed compact payload v2; legacy JSON/v1 remains readable.
+  Change signed-update compatibility for a manual generation transition while
+  retaining v3 heartbeat/update-control discovery.
+
 - Opt-in publisher-signed network-cluster updates: relay release offers over
   authenticated v3 traffic, verify exact archive hashes and Ed25519 signatures,
   stage downloads outside capture, and serialize automatic installs through a

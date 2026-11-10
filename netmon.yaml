@@ -35,6 +35,14 @@ storage:
   queue_memory_mb: 8
 
 network:
+  # Bounded built-in classification and forensic history.
+  classify: true
+  exclude_replies: false
+  max_tracked_flows: 8192
+  flow_timeout: 2m
+  detail_targets: 16
+  analysis_interval: 2s
+  analysis_budget: 200ms
   # false makes a full node a receiver/storage replica only.
   capture: true
   # Empty = all ports/protocols. These lists filter destination ports.

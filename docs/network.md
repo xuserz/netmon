@@ -287,32 +287,13 @@ in this mode. Query a full node for shared history or CSV export.
 
 ## Observation storage format
 
-New observations use a versioned binary payload (`NM`, version 1) in SQLite.
-The existing SQL columns hold observation ID, node ID, IP and minute exactly
-once. The payload stores the complete name, protocol/byte/packet counters,
-first/last offsets within the minute, peak PPS, ordered port sample, evidence
-(including its time relative to the minute) and partial flag. Integers use varints;
-there is no lossy rounding, time rollup, port truncation beyond the existing
-capture policy, or removal of indexes. The evidence JSON in the small per-IP
-summary table is unchanged.
-
-Both legacy JSON payloads and compact payloads are readable in the same database.
-An unchanged legacy observation replay does not bump its version just because
-the encoding differs. Updated observations use the compact encoding. Network
-v3 messages continue to exchange the exact same JSON sample fields, and CSV/top/
-show output has the same statistical meaning. Nodes on older network v3 binaries
-can still exchange observations using their own legacy storage; the **same
-compact database file** requires the updated reader. Upgrade all full members to
-benefit from the same storage density: an older, less compact full node can still
-advance the cluster-wide cleanup boundary at its own capacity limit. Retain an appropriate backup
-before downgrading an executable.
-
-Existing historical JSON records are not rewritten during capture. To shrink
-already allocated files, use [the compact-copy maintenance workflow](operations.md#compact-network-history).
-It preserves node identity, epoch, sequence, peer cursors, cleanup boundary,
-minute windows, priority, all observations and aggregate totals. It creates a
-separate checked file and requires the configured runtime to be stopped, so
-switching paths does not omit observations arriving after a live snapshot.
+Detailed observations use compact payload v2, while JSON and compact v1 remain
+readable. Incoming classifications, bounded port/node history, the replicated
+incident journal and decaying correlation are described in the
+[forensic history guide](forensics.md). Data exchange uses network v4; manually
+migrate all nodes once. Legacy v3 heartbeat/update-control remains available for
+release discovery, while v3 telemetry is refused. Preserve a matching backup
+before a cross-generation downgrade.
 
 ## Node presence and connections
 
@@ -356,7 +337,7 @@ Heartbeats run independently of capture and delivery, at the smaller of
 They reuse authenticated bounded ingest messages with no observations. Updated
 receivers reply without touching statistics or replication cursors; heartbeats
 do not increment delivery ACKs or update last durable delivery. Existing network
-v3 peers accept empty ingests, so this extension needs no protocol/database reset;
+v3 peers accept control-only empty ingests; v4 telemetry requires migrating all nodes;
 update both endpoints for complete idle-sensor visibility and diagnostics.
 Online lifetime is at least 15s, extended for configured heartbeat interval and
 bounded probe rounds (up to 70s with 32 known endpoints). An orderly exit does not
@@ -397,7 +378,7 @@ removes existing older rows in a bounded transaction immediately, then continues
 background batches normally checked each minute; cleanup backlog can delay displayed totals. **A full node
 with a smaller database cap can shorten history for the entire cluster.** Use
 similar limits, or keep long-term archives outside the live cluster. The protocol
-is network v3; update all full and forward members together. Previous network
+is network v4; update all full and forward members together. Previous network
 protocols cannot safely interpret capacity deletions and are rejected.
 
 Counter totals subtract removed observations; an IP disappears when none remain.
@@ -456,7 +437,7 @@ and let current peers repopulate it instead.
   four-column client totals are separate. All communicating members must use
   the same mode. Forward storage is available only in network mode.
 - Policy/retention are recorded in each network database. To disable age expiry,
-  update all members to network v3, set `storage.retention: 0s` everywhere and
+  update all members to network v4, set `storage.retention: 0s` everywhere and
   restart. Full nodes migrate a positive retention to zero in place, preserving
   surviving observations, counters, node identity, epoch and cursors. Already
   expired/deleted observations cannot be restored. No new database is needed.

@@ -66,7 +66,7 @@ esac
         project = self.root / "checkout"
         (project / "scripts").mkdir(parents=True)
         (project / "packaging").mkdir()
-        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md", "docs/providers.md", "docs/updates.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"):
+        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md", "docs/providers.md", "docs/updates.md", "docs/forensics.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"):
             (project / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, project / name)
         content = (ROOT / "scripts/install.sh").read_text()

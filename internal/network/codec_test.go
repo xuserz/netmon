@@ -129,6 +129,7 @@ func BenchmarkSampleCodec(b *testing.B) {
 func FuzzCompactCodec(f *testing.F) {
 	s := codecSample()
 	f.Add(encodeSample(s))
+	f.Add(encodeSample(detailedSample(s.Node, s.Window, 1000)))
 	raw, _ := json.Marshal(s)
 	f.Add(raw)
 	f.Fuzz(func(t *testing.T, raw []byte) {

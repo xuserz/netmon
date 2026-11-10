@@ -17,7 +17,7 @@ import (
 )
 
 const Repository = "xuserz/netmon"
-const Compatibility = "network-v3-store-v1"
+const Compatibility = "network-v4-details-v2"
 const MaxManifest = 8192
 const MaxArchive = 64 << 20
 const domain = "netmon-release-v1\n"

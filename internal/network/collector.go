@@ -18,6 +18,8 @@ type portTime struct {
 	at   int64
 }
 type entry struct {
+	detail                              atomic.Pointer[observation.Sample]
+	inbound, reply, unknown             atomic.Int64
 	ip                                  netip.Addr
 	sample                              observation.Sample
 	ack                                 *atomic.Int64
@@ -35,6 +37,7 @@ type collector struct {
 	node, name                                                        string
 	policy                                                            observation.Policy
 	limit                                                             int
+	detailTargets                                                     int
 	index                                                             map[netip.Addr]*list.Element
 	order                                                             *list.List
 	slots                                                             []atomic.Pointer[entry]
@@ -49,7 +52,7 @@ type collector struct {
 
 func newCollector(node, name string, limit int, policy observation.Policy, q *memoryQueue) *collector {
 	limit = max(1, limit)
-	return &collector{node: node, name: name, policy: policy, limit: limit, index: map[netip.Addr]*list.Element{}, order: list.New(), slots: make([]atomic.Pointer[entry], limit), queue: q, seed: sha256.Sum256([]byte(observation.ID()))}
+	return &collector{detailTargets: 16, node: node, name: name, policy: policy, limit: limit, index: map[netip.Addr]*list.Element{}, order: list.New(), slots: make([]atomic.Pointer[entry], limit), queue: q, seed: sha256.Sum256([]byte(observation.ID()))}
 }
 func (c *collector) id() string {
 	c.sequence++
@@ -63,6 +66,10 @@ func (c *collector) emit(e *entry, final bool) {
 	if e.sample.Packets == 0 || !e.dirty {
 		return
 	}
+	snapshot := e.sample
+	snapshot.Details = e.sample.Details.Clone()
+	snapshot.Ports = append([]uint16(nil), e.sample.Ports...)
+	e.detail.Store(&snapshot)
 	if c.queue.put(e.sample, e.ack) {
 		e.dirty = false
 	} else if final {
@@ -103,7 +110,7 @@ func (c *collector) add(p observation.Packet, at time.Time) {
 	window := sec / 60 * 60
 	if e.sample.ID == "" || e.sample.Window != window {
 		c.emit(e, true)
-		e.sample = observation.Sample{ID: c.id(), Node: c.node, Name: c.name, IP: p.Source.String(), Window: window, First: sec, Last: sec}
+		e.sample = observation.Sample{ID: c.id(), Node: c.node, Name: c.name, IP: p.Source.String(), Window: window, First: sec, Last: sec, Details: &observation.Details{}}
 		e.ack = &atomic.Int64{}
 	}
 	e.seq.Add(1)
@@ -122,6 +129,15 @@ func (c *collector) add(p observation.Packet, at time.Time) {
 		add.ICMP = 1
 	}
 	e.sample.Counters = e.sample.Counters.Plus(add)
+	e.sample.Details.Add(p, c.detailTargets)
+	switch p.Class {
+	case observation.Inbound:
+		e.inbound.Add(1)
+	case observation.Reply:
+		e.reply.Add(1)
+	default:
+		e.unknown.Add(1)
+	}
 	e.packets.Store(observation.Add(e.packets.Load(), 1))
 	e.bytes.Store(observation.Add(e.bytes.Load(), int64(p.Length)))
 	e.tcp.Store(observation.Add(e.tcp.Load(), add.TCP))
@@ -135,8 +151,10 @@ func (c *collector) add(p observation.Packet, at time.Time) {
 		e.secondPackets = 0
 		e.secondSyn = 0
 	}
-	e.secondPackets++
-	e.secondSyn += add.SYN
+	if p.Class != observation.Reply {
+		e.secondPackets++
+		e.secondSyn += add.SYN
+	}
 	e.sample.PeakPPS = max(e.sample.PeakPPS, e.secondPackets)
 	e.peak.Store(max(e.peak.Load(), e.secondPackets))
 	if p.SYN && p.Port != 0 {
@@ -206,7 +224,7 @@ func (c *collector) snapshot(now time.Time) ([]observation.IP, observation.Total
 			if seq&1 != 0 {
 				continue
 			}
-			row := observation.IP{IP: e.ip.String(), Counters: observation.Counters{Packets: e.packets.Load(), Bytes: e.bytes.Load(), TCP: e.tcp.Load(), SYN: e.syn.Load(), UDP: e.udp.Load(), ICMP: e.icmp.Load()}, First: e.first.Load(), Last: e.last.Load(), PeakPPS: e.peak.Load(), Partial: e.partial.Load()}
+			row := observation.IP{Traffic: observation.Traffic{Inbound: e.inbound.Load(), Reply: e.reply.Load(), Unknown: e.unknown.Load()}, IP: e.ip.String(), Counters: observation.Counters{Packets: e.packets.Load(), Bytes: e.bytes.Load(), TCP: e.tcp.Load(), SYN: e.syn.Load(), UDP: e.udp.Load(), ICMP: e.icmp.Load()}, First: e.first.Load(), Last: e.last.Load(), PeakPPS: e.peak.Load(), Partial: e.partial.Load()}
 			evidence := observation.Evidence{At: e.riskAt.Load(), PPS: e.riskPPS.Load(), SYN: e.riskSYN.Load(), Ports: int(e.riskPorts.Load())}
 			if row.Packets == 0 {
 				break
@@ -215,10 +233,12 @@ func (c *collector) snapshot(now time.Time) ([]observation.IP, observation.Total
 				continue
 			}
 			row.Score, row.Reasons = c.policy.Score(evidence, now)
+			row.IntensityScore = row.Score
 			row.EvidenceAt = evidence.At
 			if index, exists := seen[row.IP]; exists {
 				old := result[index]
 				old.Counters = old.Counters.Plus(row.Counters)
+				old.Traffic = old.Traffic.Plus(row.Traffic)
 				old.First = min(old.First, row.First)
 				old.Last = max(old.Last, row.Last)
 				old.PeakPPS = max(old.PeakPPS, row.PeakPPS)

@@ -18,16 +18,32 @@ type Rating struct {
 	HalfLife         time.Duration `yaml:"half_life"`
 }
 type Network struct {
-	Capture          bool     `yaml:"capture"`
-	Ports            []uint16 `yaml:"ports"`
-	ExcludePorts     []uint16 `yaml:"exclude_ports"`
-	RuntimeDirectory string   `yaml:"runtime_directory"`
-	Rating           Rating   `yaml:"rating"`
+	AnalysisInterval time.Duration `yaml:"analysis_interval"`
+	AnalysisBudget   time.Duration `yaml:"analysis_budget"`
+	Classify         bool          `yaml:"classify"`
+	ExcludeReplies   bool          `yaml:"exclude_replies"`
+	MaxTrackedFlows  int           `yaml:"max_tracked_flows"`
+	FlowTimeout      time.Duration `yaml:"flow_timeout"`
+	DetailTargets    int           `yaml:"detail_targets"`
+	Capture          bool          `yaml:"capture"`
+	Ports            []uint16      `yaml:"ports"`
+	ExcludePorts     []uint16      `yaml:"exclude_ports"`
+	RuntimeDirectory string        `yaml:"runtime_directory"`
+	Rating           Rating        `yaml:"rating"`
 }
 
 func (c Config) validateNetwork() error {
 	if c.Mode != "dns" && c.Mode != "network" {
 		return errors.New("mode must be dns or network")
+	}
+	if c.Network.MaxTrackedFlows < 0 || c.Network.MaxTrackedFlows > 1000000 || c.Network.FlowTimeout < time.Second || c.Network.FlowTimeout > time.Hour || c.Network.DetailTargets < 1 || c.Network.DetailTargets > 64 {
+		return errors.New("invalid network flow/detail budgets")
+	}
+	if c.Network.AnalysisInterval < time.Second || c.Network.AnalysisInterval > time.Minute || c.Network.AnalysisBudget < 50*time.Millisecond || c.Network.AnalysisBudget > time.Second || c.Network.AnalysisBudget > c.Network.AnalysisInterval/2 {
+		return errors.New("invalid analysis interval/budget")
+	}
+	if c.Network.ExcludeReplies && (!c.Network.Classify || c.Network.MaxTrackedFlows == 0) {
+		return errors.New("exclude_replies requires network.classify")
 	}
 	if c.Mode != "network" {
 		if c.Storage.Mode != "full" {

@@ -44,6 +44,7 @@ Usage: netmon [--config /etc/netmon/config.yaml] [--db /path/stats.db] COMMAND
   status               Service state and live capture diagnostics
   check [--startup]    Read-only configuration and runtime checks
   migrate-config       Convert an old dnsmon config without changing data paths
+  incidents            Saved incidents and cross-node scan evidence
   updates              Cluster update status and privileged signed-release installer
   version              Print version
 
@@ -117,9 +118,12 @@ func run(args []string, out, errOut io.Writer) error {
 		return clusterKeygen(rest[1:], out, errOut)
 	}
 	switch command {
-	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers", "compact", "providers", "updates":
+	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers", "compact", "providers", "updates", "incidents":
 	default:
 		return fmt.Errorf("unknown command %q; use netmon help", command)
+	}
+	if command == "incidents" && len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {
+		return incidentCommand(rest, config.Default(), out, errOut)
 	}
 	if command == "compact" && len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {
 		return compactCommand(rest, config.Default(), out, errOut)
@@ -153,6 +157,15 @@ func run(args []string, out, errOut io.Writer) error {
 			return errors.New("--db does not apply to updates")
 		}
 		return updatesCommand(rest, c, path, out, errOut)
+	}
+	if command == "incidents" {
+		if dbPath != "" {
+			return errors.New("--db does not apply to incidents; use --config")
+		}
+		if c.Mode != "network" {
+			return errors.New("incidents require network mode")
+		}
+		return incidentCommand(rest, c, out, errOut)
 	}
 	configuredDatabase := c.Database
 	if dbPath != "" {
