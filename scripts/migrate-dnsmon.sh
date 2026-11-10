@@ -38,6 +38,7 @@ cleanup() {
   rm -f -- "$config_temp"
   if [ "$success" -eq 0 ]; then
     if [ "$stopped" -eq 1 ]; then
+      echo 'Migration failed; restoring the previous dnsmon.service and keeping its data.' >&2
       systemctl stop netmon.service >/dev/null 2>&1 || true
       systemctl disable netmon.service >/dev/null 2>&1 || true
       rm -f /etc/systemd/system/netmon.service /usr/local/bin/netmon
@@ -72,10 +73,12 @@ if [ -d /etc/systemd/system/dnsmon.service.d ]; then
   cp -pR /etc/systemd/system/dnsmon.service.d /etc/systemd/system/netmon.service.d
 fi
 # The installer keeps an inactive service inactive; migration restores the state.
-sh "$project_dir/scripts/install.sh" "$binary"
+NETMON_MIGRATION=1 sh "$project_dir/scripts/install.sh" "$binary"
 if [ "$was_active" -eq 1 ]; then
   systemctl daemon-reload
-  systemctl reset-failed netmon.service
+  # reset-failed only operates on loaded units; an inactive/new unit may
+  # have been collected. Starting the service remains the authoritative check.
+  systemctl reset-failed netmon.service >/dev/null 2>&1 || true
   systemctl start netmon.service
   attempts=0
   healthy=0

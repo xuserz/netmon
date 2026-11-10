@@ -142,7 +142,9 @@ for helper in install-release.sh uninstall.sh; do
 done
 systemctl daemon-reload
 if [ "$was_active" -eq 1 ]; then
-  systemctl reset-failed netmon.service
+  # reset-failed only operates on loaded units; an inactive/new unit may
+  # have been collected. Starting the service remains the authoritative check.
+  systemctl reset-failed netmon.service >/dev/null 2>&1 || true
   systemctl start netmon.service
   attempts=0
   healthy=0
@@ -164,6 +166,9 @@ if [ "$was_active" -eq 1 ]; then
   fi
 fi
 succeeded=1
+if [ "${NETMON_MIGRATION:-0}" = 1 ]; then
+  echo 'Program files installed; continuing service migration checks.'
+else
 cat <<'MESSAGE'
 Installed. Existing configuration and database have been preserved.
 Update later without Go:
@@ -175,3 +180,4 @@ For a new installation, review the selected interface before enabling:
   sudo netmon status
   sudo netmon top
 MESSAGE
+fi

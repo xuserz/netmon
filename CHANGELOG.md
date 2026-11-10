@@ -8,6 +8,10 @@ tags retroactively.
 
 ### Fixed
 
+- Continue service migration/update when `reset-failed` reports an unloaded unit;
+  retain fatal start/health checks and rollback. Model inactive-unit collection
+  in installer tests and show installation success only at the appropriate stage.
+
 - Drain buffered PTY output after the tested process exits, so terminal
   restoration checks do not intermittently fail static-release CI. Add a
   deterministic fragmented-output regression and close test SQLite connections.

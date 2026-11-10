@@ -38,6 +38,11 @@ case "$*" in *dnsmon.service*) exit 3;; esac
 case "$1" in
  is-active) [ "$(cat "$TEST_STATE")" = active ] ;;
  stop) echo stopped > "$TEST_STATE" ;;
+ reset-failed)
+  if [ "$(cat "$TEST_STATE")" = stopped ]; then
+   echo 'Failed to reset failed state of unit netmon.service: Unit netmon.service not loaded.' >&2
+   exit 1
+  fi ;;
  start)
   if grep -q 'new-bad' "$TEST_ROOT/usr/local/bin/netmon"; then
    echo failed > "$TEST_STATE"
@@ -156,6 +161,11 @@ case "$1" in
  is-active) [ "$(cat "$state")" = active ];;
  is-enabled) [ "$(cat "$enabled")" = 1 ];;
  stop) echo stopped > "$state";;
+ reset-failed)
+  if [ "$(cat "$state")" = stopped ]; then
+   echo 'Failed to reset failed state of unit: Unit not loaded.' >&2
+   exit 1
+  fi;;
  start)
   if [ "$legacy" -eq 0 ] && grep -q new-bad "$TEST_ROOT/usr/local/bin/netmon"; then echo failed > "$state"; exit 1; fi
   echo active > "$state";;
@@ -216,6 +226,7 @@ esac
         self.assertEqual(self.new_enabled.read_text().strip(), "1")
         self.assertIn("User=dnsmon", self.unit.read_text())
         self.assertIn("RuntimeDirectory=dnsmon", self.unit.read_text())
+        self.assertNotIn("For a new installation", result.stdout)
         self.assertIn("/var/lib/dnsmon/stats.db", self.config.read_text())
         self.assertEqual(self.old_unit.read_bytes(), original_unit)
         self.assert_legacy_data_untouched()
@@ -229,6 +240,7 @@ esac
         self.prepare_legacy()
         result = self.run_migration(bad=True)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring the previous dnsmon.service", result.stderr)
         self.assertEqual(self.legacy_state.read_text().strip(), "active")
         self.assertEqual(self.legacy_enabled.read_text().strip(), "1")
         for path in (self.unit, self.config, self.installed):
@@ -271,4 +283,16 @@ esac
         self.assertIn("manual migration", result.stderr)
         self.assertFalse(self.config.exists())
         self.assertEqual(self.legacy_state.read_text().strip(), "active")
+        self.assert_legacy_data_untouched()
+
+    def test_failed_migration_can_be_retried_without_deleting_recovery_artifacts(self):
+        self.prepare_legacy()
+        failed = self.run_migration(bad=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(self.legacy_state.read_text().strip(), "active")
+        self.assert_legacy_data_untouched()
+        retried = self.run_migration()
+        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
+        self.assertEqual(self.state.read_text().strip(), "active")
+        self.assertEqual(self.legacy_state.read_text().strip(), "stopped")
         self.assert_legacy_data_untouched()
