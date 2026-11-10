@@ -1,6 +1,8 @@
 # New installations monitor incoming IPv4/IPv6 activity on all ports.
 # Existing configs without mode retain the legacy DNS accounting behavior.
 mode: network
+# Optional address book; changes are reloaded by top without restarting capture.
+labels_file: /etc/netmon/ip-labels.yaml
 # Choose ONE interface before Docker NAT: ip route get 1.1.1.1
 interface: eth0
 destination_ip: ""

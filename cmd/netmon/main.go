@@ -34,6 +34,8 @@ Usage: netmon [--config /etc/netmon/config.yaml] [--db /path/stats.db] COMMAND
   stats                Global totals
   list                 All saved source IPs (network: temporary snapshot)
   export --csv FILE    Export a consistent snapshot to CSV
+  whitelist            List/add/remove trusted IP descriptions
+  servers              List/add/remove your server IP descriptions
   nodes                Cluster peers and synchronization status
   cluster keygen       Generate a shared cluster key
   status               Service state and live capture diagnostics
@@ -100,7 +102,7 @@ func run(args []string, out, errOut io.Writer) error {
 		return clusterKeygen(rest[1:], out, errOut)
 	}
 	switch command {
-	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes":
+	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers":
 	default:
 		return fmt.Errorf("unknown command %q; use netmon help", command)
 	}
@@ -111,6 +113,12 @@ func run(args []string, out, errOut io.Writer) error {
 		}
 		fmt.Fprintf(errOut, "Configuration error: %v\n", e)
 		c = config.Default()
+	}
+	if command == "whitelist" || command == "servers" {
+		if dbPath != "" {
+			return errors.New("--db does not apply to address-book commands; use --config")
+		}
+		return labelCommand(command, rest, c, path, out)
 	}
 	configuredDatabase := c.Database
 	if dbPath != "" {

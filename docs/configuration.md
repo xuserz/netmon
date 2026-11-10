@@ -24,6 +24,7 @@ See [network monitoring](network.md) for complete full/forward configurations.
 
 | Option | Omitted default | Description |
 | --- | --- | --- |
+| `labels_file` | `/etc/netmon/ip-labels.yaml` | Local server/whitelist descriptions; absolute path or empty to disable the manual catalog. Network CLI views reload edits automatically. |
 | `mode` | `dns` | `network` for packet activity/rating, `dns` for legacy query accounting. |
 | `storage.mode` | `full` | `full` stores shared data; `forward` sends from RAM and opens no statistics DB. Forward requires network mode and at least one cluster peer. |
 | `storage.retention` | `24h` | Network observation lifetime, 1h..720h. Every member must agree. |

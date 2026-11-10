@@ -115,6 +115,49 @@ In the dashboard: arrows or `j/k` scroll, PageUp/PageDown navigate, Space pauses
 supported. Full-node views show committed shared data and can lag behind capture;
 `--local` and forward-node views show a bounded sample of current-process activity.
 
+## Own servers and whitelist
+
+In network mode, `top`, `show`, `list`, and CSV display **SERVER**, **WL**, or
+**SERVER+WL** beside matching source IPs, with your server/service description.
+The selected interface's local addresses and literal-IP cluster endpoints are
+recognized as own-server hints; explicit server entries take precedence.
+
+```sh
+sudo netmon servers add 192.0.2.10 "DNS node EU"
+sudo netmon whitelist add 198.51.100.20 "Uptime Kuma"
+sudo netmon whitelist add 2001:db8:1234::/48 "Monitoring network"
+netmon servers list
+netmon whitelist list
+sudo netmon whitelist remove 198.51.100.20
+```
+
+New installations include **185 exact IPv4/IPv6 addresses from 14 public DNS
+providers**, with provider and filtering-profile descriptions. Existing catalogs
+are preserved on upgrade. To merge the bundled selection without overwriting
+your entries or CIDR coverage:
+
+```sh
+sudo netmon whitelist import-dns
+```
+
+See the [DNS catalog and official sources](docs/public-dns.md). Resolver endpoint
+IPs can differ from recursive egress IPs; the selection does not cover every
+source that a provider might use to query your server.
+
+The address book is `/etc/netmon/ip-labels.yaml` (`labels_file` in config).
+Descriptions refresh in a running `top` without restarting capture. Adding an
+entry does not create fake traffic rows. Whitelist labels retain all counters
+and the observed suspicion score; they do not automatically suppress activity.
+A SERVER label alone does not put an address in the whitelist.
+
+Descriptions are local to the machine displaying/exporting statistics. Deploy
+the same catalog on other nodes when you want identical labels. There are no
+external hosting/GeoIP/WHOIS queries. For NAT, hostname endpoints, or forward
+nodes without an advertised address, enter the actual IPs with `servers add`.
+
+See [address-book details](docs/network.md#own-servers-and-whitelist) for matching,
+permissions, bounds, and live reload behavior.
+
 ## Multiple servers and storage roles
 
 Every **full** node keeps a replica of the shared retained statistics. There is

@@ -105,3 +105,22 @@ func TestNetworkRendererFitsAndShowsRiskAndLoss(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkDescriptionsAndTrustTagsStayVisibleWithoutMaskingRisk(t *testing.T) {
+	s := State{Sort: "score", Color: true, Data: live.Response{Network: true, NetworkIPs: []observation.IP{{IP: "2001:db8::1234", Score: 85, ServerName: "DNS node", Whitelisted: true, WhitelistDescription: "Uptime Kuma", Counters: observation.Counters{Packets: 777777}}}}}
+	for _, width := range []int{50, 70, 80, 100, 110, 180} {
+		output := ansi.ReplaceAllString(Render(s, width, 24), "")
+		for _, line := range strings.Split(output, "\r\n") {
+			if len([]rune(line)) != width {
+				t.Fatal(width, line)
+			}
+		}
+		if !strings.Contains(output, "DNS node") {
+			t.Fatal(width, output)
+		}
+	}
+	output := Render(s, 110, 24)
+	if !strings.Contains(output, "SERVER+WL") || !strings.Contains(output, "Uptime Kuma") || !strings.Contains(output, "\x1b[38;5;203m") {
+		t.Fatal(output)
+	}
+}

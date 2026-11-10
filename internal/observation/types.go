@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"strings"
 	"time"
 	"unicode"
 )
@@ -49,7 +50,11 @@ type Sample struct {
 	Partial  bool     `json:"partial"`
 }
 type IP struct {
-	IP string `json:"ip"`
+	ServerName           string `json:"server_name,omitempty"`
+	ServerSource         string `json:"server_source,omitempty"`
+	Whitelisted          bool   `json:"whitelisted,omitempty"`
+	WhitelistDescription string `json:"whitelist_description,omitempty"`
+	IP                   string `json:"ip"`
 	Counters
 	First      int64    `json:"first_seen"`
 	Last       int64    `json:"last_seen"`
@@ -208,4 +213,30 @@ func (p Policy) Score(e Evidence, now time.Time) (int, []string) {
 	age := max(int64(0), now.Unix()-e.At)
 	score := int(math.Round(float64(base) * math.Exp(-math.Ln2*float64(age)/float64(p.HalfLifeSeconds))))
 	return max(0, min(100, score)), reasons
+}
+
+func (ip IP) Tag() string {
+	if ip.ServerName != "" && ip.Whitelisted {
+		return "SERVER+WL"
+	}
+	if ip.ServerName != "" {
+		return "SERVER"
+	}
+	if ip.Whitelisted {
+		return "WL"
+	}
+	return "-"
+}
+func (ip IP) Label() string {
+	var parts []string
+	if ip.ServerName != "" {
+		parts = append(parts, ip.ServerName)
+	}
+	if ip.WhitelistDescription != "" {
+		parts = append(parts, ip.WhitelistDescription)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " · ")
 }

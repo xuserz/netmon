@@ -66,7 +66,7 @@ esac
         project = self.root / "checkout"
         (project / "scripts").mkdir(parents=True)
         (project / "packaging").mkdir()
-        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md"):
+        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md"):
             (project / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, project / name)
         content = (ROOT / "scripts/install.sh").read_text()
@@ -102,6 +102,8 @@ esac
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("new-good", self.installed.read_text())
         self.assertTrue((self.root / "usr/share/doc/netmon/docs/configuration.md").is_file())
+        self.assertTrue((self.root / "usr/share/doc/netmon/docs/public-dns.md").is_file())
+        self.assertEqual((self.root / "etc/netmon/ip-labels.yaml").read_bytes(), (ROOT / "ip-labels.yaml").read_bytes())
         self.assertTrue((self.root / "usr/share/doc/netmon/netmon.yaml").is_file())
         self.assertEqual((self.root / "usr/share/doc/netmon/LICENSE").read_text(), (ROOT / "LICENSE").read_text())
         self.assertEqual(self.state.read_text().strip(), "active")
@@ -296,3 +298,11 @@ esac
         self.assertEqual(self.state.read_text().strip(), "active")
         self.assertEqual(self.legacy_state.read_text().strip(), "stopped")
         self.assert_legacy_data_untouched()
+
+    def test_existing_ip_labels_are_preserved_during_update(self):
+        labels = self.root / "etc/netmon/ip-labels.yaml"
+        original = "whitelist:\n  - ip: 192.0.2.1\n    description: My monitor\nservers: []\n"
+        labels.write_text(original)
+        result = self.run_install("new-good")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(labels.read_text(), original)

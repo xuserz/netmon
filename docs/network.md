@@ -40,6 +40,96 @@ identify victims rather than senders. A zero score means no threshold signal was
 observed, not that an address is safe. There is no automatic blocking or public
 submission; review evidence before publishing a feed.
 
+## Own servers and whitelist
+
+Labels describe **source** addresses already present in statistics. SERVER means
+an explicitly configured own server/subnet, a local address on the selected
+interface, or a literal IP in configured/discovered cluster endpoints. It is
+not a hosting-provider classifier and does not prove that the real sender owned
+that source address. Automatic node hints show their provenance in `show IP`.
+Hostnames are not resolved for identity lookup; add public/NAT/forward-node IPs
+explicitly when they are not available from those local hints.
+
+WL marks your whitelist entry. A source can have both SERVER and WL. Counts,
+score, reasons, ordering and packet capture stay unchanged for both labels;
+whitelisted high-risk traffic remains visible. No firewall rules are modified.
+
+Manage the address book with:
+
+```sh
+sudo netmon servers add 192.0.2.10 "DNS node EU"
+sudo netmon servers add 2001:db8::10 "DNS node IPv6"
+sudo netmon whitelist add 198.51.100.20 "Uptime Kuma"
+sudo netmon whitelist add 198.51.100.0/24 "Monitoring subnet"
+netmon servers list
+netmon whitelist list
+sudo netmon whitelist remove 198.51.100.20
+sudo netmon servers remove 192.0.2.10
+```
+
+`add` updates the description when that normalized address already exists.
+Descriptions are required and limited to 256 UTF-8 bytes without controls.
+`list`, `add`, `remove`, and `whitelist import-dns` manage only this catalog and never open a statistics
+DB, including on forward nodes. Use global `--config FILE` for another catalog;
+`--db` is unrelated and rejected for these commands. Inspection features are
+currently provided in network mode.
+
+The YAML file defaults to `/etc/netmon/ip-labels.yaml`:
+
+```yaml
+servers:
+  - ip: 192.0.2.10
+    description: DNS node EU
+whitelist:
+  - ip: 198.51.100.20
+    description: Uptime Kuma
+  - ip: 2001:db8:1234::/48
+    description: Monitoring network
+```
+
+Change the absolute `labels_file` path in the main config to use another file.
+An empty path disables the manual catalog; local/server endpoint hints remain.
+A missing file is an empty catalog, while malformed files fail explicitly.
+The installer seeds 185 reviewed public DNS endpoint labels only when the catalog
+is absent, preserving user edits and
+retaining the appropriate netmon/dnsmon service group on migrated installations.
+Uninstall preserves the user's catalog alongside the rest of `/etc/netmon`.
+
+Existing installations can merge the release snapshot with
+`sudo netmon whitelist import-dns`. It adds missing literal IPs, keeping your
+exact descriptions, existing CIDR coverage and own-server list. No DNS/network
+lookup is performed, and no data is added to statistics. See the
+[provider/profile list and official sources](public-dns.md), including the
+resolver endpoint versus recursive egress distinction. Import is explicit;
+upgrades do not silently restore deleted labels.
+
+IPv4, IPv6 and CIDRs are normalized; mapped IPv4 becomes IPv4. Most-specific
+prefix wins within each list. SERVER and whitelist matching are independent;
+manual server descriptions override automatic hints. There are at most 10,000
+entries across both lists, with a 4 MiB file limit. The lookup index and local
+address hints are cached. No identity work or file access is added per captured
+packet; annotations are applied when a CLI view/export reads statistics.
+
+CLI updates use an exclusive lock and atomic replacement, preserving existing
+owner/group and permissions. Run them as root for the installed root-owned config
+directory. The CLI refuses writes through symlinks or over config/key/database/
+runtime files. You may also edit YAML manually. Keep permission to read the file
+for the account running inspection commands. Invalid manual edits leave a running
+TUI's last good display with an error; correcting the file restores refresh.
+
+A running `top` reloads catalog edits on its next refresh, without restarting the
+monitor or dashboard. Automatic interface/peer hints refresh at most every 15s.
+Full `list` and CSV freeze labels for the duration of that export. CSV appends
+`server_name,server_source,whitelisted,whitelist_description` to existing columns.
+The daemon's raw private Unix snapshots contain capture metrics; the CLI adds
+local descriptions. Schema, stored packet counters and replication protocol are
+unchanged, so no database migration or rating-policy reset is required.
+
+The catalog is **local configuration**, not replicated telemetry. Full nodes
+share counters, while each view uses its own labels. Copy/deploy the same YAML
+on other inspection nodes for matching descriptions. Forward nodes still have
+no statistics DB or disk spool; their optional user-managed catalog is config.
+
 ## A standalone full node
 
 ```yaml

@@ -51,6 +51,19 @@ tags retroactively.
 
 ### Added
 
+- Reviewed offline public DNS preset: 185 exact IPv4/IPv6 endpoint labels from
+  14 providers, with profile descriptions and official source links. Seed new
+  installs and support explicit `whitelist import-dns` merging; preserve user
+  descriptions, CIDR coverage and own-server entries, with no rating changes.
+
+- Own-server and whitelist address books with IPv4/IPv6/CIDR descriptions,
+  atomic `servers`/`whitelist` CLI editing, and live dashboard reloads.
+- SERVER/WL tags and descriptions in network top/show/list/CSV. Local interface
+  addresses and literal cluster endpoints provide server hints; explicit entries
+  override them. Labels do not suppress counters or alter suspicion scores.
+- Bounded local matching outside capture, protected catalog paths, installer
+  preservation, concurrency tests, and live/process/export label regressions.
+
 - Per-source incoming packet, byte, TCP/SYN, UDP, and ICMP counters with a
   deterministic 0–100 suspicion score, signal explanations, and time decay.
 - Network storage roles: full replicas with retained minute observations, or

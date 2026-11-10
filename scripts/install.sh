@@ -52,6 +52,10 @@ if [ ! -e /etc/netmon/config.yaml ]; then
     fi
   fi
 fi
+# Preserve the user's address book; labels never affect database ownership.
+if [ ! -e /etc/netmon/ip-labels.yaml ]; then
+  install -o root -g "$service_user" -m 0640 "$project_dir/ip-labels.yaml" /etc/netmon/ip-labels.yaml
+fi
 # Perform read-only preflight before disturbing a running installation.
 preflight() {
   if [ "$service_user" = dnsmon ]; then
@@ -126,6 +130,7 @@ for document in README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md CONTRIBUTI
   install -m 0644 "$project_dir/$document" "/usr/share/doc/netmon/$document"
 done
 install -m 0644 "$project_dir/netmon.yaml" /usr/share/doc/netmon/netmon.yaml
+install -m 0644 "$project_dir/ip-labels.yaml" /usr/share/doc/netmon/ip-labels.yaml
 if [ -d "$project_dir/docs" ]; then
   install -d -m 0755 /usr/share/doc/netmon/docs
   for guide in "$project_dir"/docs/*.md; do

@@ -258,3 +258,25 @@ class TerminalTests(unittest.TestCase):
         with mock.patch.object(os, "read", side_effect=lambda fd, size: real_read(fd, min(size, 32))):
             self.until(b"\x1b[?1049l")
         self.assertIn(b"\x1b[?25h", self.data)
+
+    def test_network_ip_descriptions_reload_while_top_stays_running(self):
+        self.live_server(network=True)
+        directory = Path(self.temp.name)
+        config = directory / "labels-config.yaml"
+        labels = directory / "ip-labels.yaml"
+        config.write_text(f"mode: network\nlabels_file: {labels}\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {directory / 'run'}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n")
+        self.start("--config", str(config), wait_for=b"192.0.2.77")
+        pid = self.process.pid
+        for kind, description in [("whitelist", "Uptime Kuma"), ("servers", "DNS node EU")]:
+            result = subprocess.run([str(BINARY), "--config", str(config), kind, "add", "192.0.2.77", description],
+                                    capture_output=True, text=True, timeout=4)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.data = b""
+            self.until(description.encode())
+        self.until(b"SERVER+WL")
+        self.assertIn(b"85", self.data)
+        self.assertEqual(self.process.pid, pid)
+        result = subprocess.run([str(BINARY), "--config", str(config), "whitelist", "remove", "192.0.2.77"],
+                                capture_output=True, text=True, timeout=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.quit_and_verify_restore()

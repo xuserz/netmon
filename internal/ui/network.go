@@ -62,9 +62,31 @@ func renderNetwork(s State, width, height int) string {
 	}
 	box(warning, 220)
 	edge("IP ACTIVITY · sort " + s.Sort)
-	ipWidth := min(39, max(16, inner-42))
-	countWidth := max(7, min(15, inner-ipWidth-26))
-	box(fmt.Sprintf(" %-*s %5s %*s %8s", ipWidth, "SOURCE IP", "RISK", countWidth, "PACKETS", "SYN"), 109)
+	// Keep descriptions visible on narrow terminals; SYN gets its own
+	// column when the terminal has room. The per-IP detail remains complete.
+	ipWidth := min(39, max(15, inner/3))
+	if inner >= 108 {
+		ipWidth = 39
+	}
+	countWidth := 7
+	tagWidth := 3
+	showSYN := inner >= 98
+	if inner >= 78 {
+		countWidth = 10
+		tagWidth = 9
+	}
+	labelWidth := inner - (1 + ipWidth + 1 + 4 + 1 + countWidth + 1 + tagWidth + 1)
+	if showSYN {
+		labelWidth -= 9
+	}
+	formatRow := func(ip, risk, packets, syn, tag, label string) string {
+		text := fmt.Sprintf(" %-*s %4s %*s", ipWidth, cut(ip, ipWidth), risk, countWidth, cut(packets, countWidth))
+		if showSYN {
+			text += fmt.Sprintf(" %8s", cut(syn, 8))
+		}
+		return text + fmt.Sprintf(" %-*s %s", tagWidth, cut(tag, tagWidth), cut(label, max(1, labelWidth)))
+	}
+	box(formatRow("SOURCE IP", "RISK", "PACKETS", "SYN", "TAG", "DESCRIPTION"), 109)
 	available := height - len(lines) - 2
 	offset := max(0, min(s.Offset, max(0, len(s.Data.NetworkIPs)-available)))
 	for i := 0; i < available; i++ {
@@ -79,6 +101,11 @@ func renderNetwork(s State, width, height int) string {
 		}
 		row := s.Data.NetworkIPs[index]
 		color := 255
+		if row.Whitelisted {
+			color = 120
+		} else if row.ServerName != "" {
+			color = 153
+		}
 		if row.Score >= 70 {
 			color = 203
 		} else if row.Score >= 30 {
@@ -86,7 +113,17 @@ func renderNetwork(s State, width, height int) string {
 		} else if row.Score > 0 {
 			color = 153
 		}
-		box(fmt.Sprintf(" %-*s %5d %*s %8s", ipWidth, cut(row.IP, ipWidth), row.Score, countWidth, cut(number(strconv.FormatInt(row.Packets, 10)), countWidth), cut(number(strconv.FormatInt(row.SYN, 10)), 8)), color)
+		tag := row.Tag()
+		if tagWidth == 3 {
+			if row.ServerName != "" && row.Whitelisted {
+				tag = "S+W"
+			} else if row.ServerName != "" {
+				tag = "S"
+			} else if row.Whitelisted {
+				tag = "W"
+			}
+		}
+		box(formatRow(row.IP, strconv.Itoa(row.Score), number(strconv.FormatInt(row.Packets, 10)), number(strconv.FormatInt(row.SYN, 10)), tag, row.Label()), color)
 	}
 	edge("q quit · ↑↓ scroll · space pause · r refresh · c color · s sort")
 	lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))

@@ -1,0 +1,554 @@
+{
+  "verified": "2026-11-10",
+  "providers": [
+    {
+      "name": "Google Public DNS",
+      "sources": [
+        "https://developers.google.com/speed/public-dns/docs/using"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "8.8.8.8",
+            "8.8.4.4",
+            "2001:4860:4860::8888",
+            "2001:4860:4860::8844"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Cloudflare DNS",
+      "sources": [
+        "https://developers.cloudflare.com/1.1.1.1/ip-addresses/"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "1.1.1.1",
+            "1.0.0.1",
+            "2606:4700:4700::1111",
+            "2606:4700:4700::1001"
+          ]
+        },
+        {
+          "name": "malware",
+          "addresses": [
+            "1.1.1.2",
+            "1.0.0.2",
+            "2606:4700:4700::1112",
+            "2606:4700:4700::1002"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "1.1.1.3",
+            "1.0.0.3",
+            "2606:4700:4700::1113",
+            "2606:4700:4700::1003"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Quad9",
+      "sources": [
+        "https://quad9.net/service/service-addresses-and-features/"
+      ],
+      "profiles": [
+        {
+          "name": "secured",
+          "addresses": [
+            "9.9.9.9",
+            "149.112.112.112",
+            "2620:fe::fe",
+            "2620:fe::9"
+          ]
+        },
+        {
+          "name": "secured ECS",
+          "addresses": [
+            "9.9.9.11",
+            "149.112.112.11",
+            "2620:fe::11",
+            "2620:fe::fe:11"
+          ]
+        },
+        {
+          "name": "unfiltered",
+          "addresses": [
+            "9.9.9.10",
+            "149.112.112.10",
+            "2620:fe::10",
+            "2620:fe::fe:10"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AdGuard DNS",
+      "sources": [
+        "https://adguard-dns.io/en/public-dns.html"
+      ],
+      "profiles": [
+        {
+          "name": "default",
+          "addresses": [
+            "94.140.14.14",
+            "94.140.15.15",
+            "2a10:50c0::ad1:ff",
+            "2a10:50c0::ad2:ff"
+          ]
+        },
+        {
+          "name": "unfiltered",
+          "addresses": [
+            "94.140.14.140",
+            "94.140.14.141",
+            "2a10:50c0::1:ff",
+            "2a10:50c0::2:ff"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "94.140.14.15",
+            "94.140.15.16",
+            "2a10:50c0::bad1:ff",
+            "2a10:50c0::bad2:ff"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OpenDNS",
+      "sources": [
+        "https://www.opendns.com/setupguide/",
+        "https://www.cisco.com/c/en/us/td/docs/security/asa/asa923/configuration/firewall/asa-923-firewall-config/access-umbrella.pdf"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "208.67.222.222",
+            "208.67.220.220",
+            "2620:119:35::35",
+            "2620:119:53::53"
+          ]
+        },
+        {
+          "name": "FamilyShield",
+          "addresses": [
+            "208.67.222.123",
+            "208.67.220.123"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Yandex DNS",
+      "sources": [
+        "https://dns.yandex.ru/"
+      ],
+      "profiles": [
+        {
+          "name": "basic",
+          "addresses": [
+            "77.88.8.8",
+            "77.88.8.1",
+            "2a02:6b8::feed:ff",
+            "2a02:6b8:0:1::feed:ff"
+          ]
+        },
+        {
+          "name": "safe",
+          "addresses": [
+            "77.88.8.88",
+            "77.88.8.2",
+            "2a02:6b8::feed:bad",
+            "2a02:6b8:0:1::feed:bad"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "77.88.8.7",
+            "77.88.8.3",
+            "2a02:6b8::feed:a11",
+            "2a02:6b8:0:1::feed:a11"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CleanBrowsing",
+      "sources": [
+        "https://cleanbrowsing.org/filters"
+      ],
+      "profiles": [
+        {
+          "name": "security",
+          "addresses": [
+            "185.228.168.9",
+            "185.228.169.9",
+            "2a0d:2a00:1::2",
+            "2a0d:2a00:2::2"
+          ]
+        },
+        {
+          "name": "adult",
+          "addresses": [
+            "185.228.168.10",
+            "185.228.169.11",
+            "2a0d:2a00:1::1",
+            "2a0d:2a00:2::1"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "185.228.168.168",
+            "185.228.169.168",
+            "2a0d:2a00:1::",
+            "2a0d:2a00:2::"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Control D",
+      "sources": [
+        "https://docs.controld.com/docs/free-dns",
+        "https://docs.controld.com/docs/control-d-ip-ranges"
+      ],
+      "profiles": [
+        {
+          "name": "unfiltered",
+          "addresses": [
+            "76.76.2.0",
+            "76.76.10.0",
+            "2606:1a40::",
+            "2606:1a40:1::"
+          ]
+        },
+        {
+          "name": "malware",
+          "addresses": [
+            "76.76.2.1",
+            "76.76.10.1",
+            "2606:1a40::1",
+            "2606:1a40:1::1"
+          ]
+        },
+        {
+          "name": "ads and tracking",
+          "addresses": [
+            "76.76.2.2",
+            "76.76.10.2",
+            "2606:1a40::2",
+            "2606:1a40:1::2"
+          ]
+        },
+        {
+          "name": "social",
+          "addresses": [
+            "76.76.2.3",
+            "76.76.10.3",
+            "2606:1a40::3",
+            "2606:1a40:1::3"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "76.76.2.4",
+            "76.76.10.4",
+            "2606:1a40::4",
+            "2606:1a40:1::4"
+          ]
+        },
+        {
+          "name": "uncensored",
+          "addresses": [
+            "76.76.2.5",
+            "76.76.10.5",
+            "2606:1a40::5",
+            "2606:1a40:1::5"
+          ]
+        },
+        {
+          "name": "OISD Full",
+          "addresses": [
+            "76.76.2.32",
+            "76.76.10.32",
+            "2606:1a40::32",
+            "2606:1a40:1::32"
+          ]
+        },
+        {
+          "name": "OISD Basic",
+          "addresses": [
+            "76.76.2.33",
+            "76.76.10.33",
+            "2606:1a40::33",
+            "2606:1a40:1::33"
+          ]
+        },
+        {
+          "name": "StevenBlack",
+          "addresses": [
+            "76.76.2.35",
+            "76.76.10.35",
+            "2606:1a40::35",
+            "2606:1a40:1::35"
+          ]
+        },
+        {
+          "name": "1Hosts Lite",
+          "addresses": [
+            "76.76.2.38",
+            "76.76.10.38",
+            "2606:1a40::38",
+            "2606:1a40:1::38"
+          ]
+        },
+        {
+          "name": "1Hosts Pro",
+          "addresses": [
+            "76.76.2.39",
+            "76.76.10.39",
+            "2606:1a40::39",
+            "2606:1a40:1::39"
+          ]
+        },
+        {
+          "name": "1Hosts Xtra",
+          "addresses": [
+            "76.76.2.48",
+            "76.76.10.48",
+            "2606:1a40::48",
+            "2606:1a40:1::48"
+          ]
+        },
+        {
+          "name": "Hagezi Light",
+          "addresses": [
+            "76.76.2.37",
+            "76.76.10.37",
+            "2606:1a40::37",
+            "2606:1a40:1::37"
+          ]
+        },
+        {
+          "name": "Hagezi Normal",
+          "addresses": [
+            "76.76.2.40",
+            "76.76.10.40",
+            "2606:1a40::40",
+            "2606:1a40:1::40"
+          ]
+        },
+        {
+          "name": "Hagezi Pro",
+          "addresses": [
+            "76.76.2.41",
+            "76.76.10.41",
+            "2606:1a40::41",
+            "2606:1a40:1::41"
+          ]
+        },
+        {
+          "name": "Hagezi Pro Plus",
+          "addresses": [
+            "76.76.2.42",
+            "76.76.10.42",
+            "2606:1a40::42",
+            "2606:1a40:1::42"
+          ]
+        },
+        {
+          "name": "Hagezi Ultimate",
+          "addresses": [
+            "76.76.2.45",
+            "76.76.10.45",
+            "2606:1a40::45",
+            "2606:1a40:1::45"
+          ]
+        },
+        {
+          "name": "Hagezi TIF",
+          "addresses": [
+            "76.76.2.46",
+            "76.76.10.46",
+            "2606:1a40::46",
+            "2606:1a40:1::46"
+          ]
+        },
+        {
+          "name": "AdGuard Filter",
+          "addresses": [
+            "76.76.2.44",
+            "76.76.10.44",
+            "2606:1a40::44",
+            "2606:1a40:1::44"
+          ]
+        },
+        {
+          "name": "free bootstrap",
+          "addresses": [
+            "76.76.2.11",
+            "76.76.10.11",
+            "2606:1a40::11",
+            "2606:1a40:1::11"
+          ]
+        },
+        {
+          "name": "secure bootstrap",
+          "addresses": [
+            "76.76.2.22",
+            "76.76.10.22",
+            "2606:1a40::22",
+            "2606:1a40:1::22"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "DNS.SB",
+      "sources": [
+        "https://dns.sb/"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "185.222.222.222",
+            "45.11.45.11",
+            "2a09::",
+            "2a11::"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "DNS.WATCH",
+      "sources": [
+        "https://dns.watch/"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "84.200.69.80",
+            "84.200.70.40",
+            "2001:1608:10:25::1c04:b12f",
+            "2001:1608:10:25::9249:d69b"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AliDNS",
+      "sources": [
+        "https://www.alibabacloud.com/help/en/dns/free-service-disclaimer"
+      ],
+      "profiles": [
+        {
+          "name": "public",
+          "addresses": [
+            "223.5.5.5",
+            "223.6.6.6",
+            "2400:3200::1",
+            "2400:3200:baba::1"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mullvad DNS",
+      "sources": [
+        "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"
+      ],
+      "profiles": [
+        {
+          "name": "standard",
+          "addresses": [
+            "194.242.2.2",
+            "2a07:e340::2"
+          ]
+        },
+        {
+          "name": "adblock",
+          "addresses": [
+            "194.242.2.3",
+            "2a07:e340::3"
+          ]
+        },
+        {
+          "name": "base",
+          "addresses": [
+            "194.242.2.4",
+            "2a07:e340::4"
+          ]
+        },
+        {
+          "name": "extended",
+          "addresses": [
+            "194.242.2.5",
+            "2a07:e340::5"
+          ]
+        },
+        {
+          "name": "family",
+          "addresses": [
+            "194.242.2.6",
+            "2a07:e340::6"
+          ]
+        },
+        {
+          "name": "all",
+          "addresses": [
+            "194.242.2.9",
+            "2a07:e340::9"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "NextDNS",
+      "sources": [
+        "https://github.com/nextdns/nextdns/blob/master/run.go"
+      ],
+      "profiles": [
+        {
+          "name": "anycast bootstrap",
+          "addresses": [
+            "45.90.28.0",
+            "45.90.30.0",
+            "2a07:a8c0::",
+            "2a07:a8c1::"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "DNSPod",
+      "sources": [
+        "https://cloud.tencent.com/document/product/302/110786"
+      ],
+      "profiles": [
+        {
+          "name": "public",
+          "addresses": [
+            "119.29.29.29",
+            "2402:4e00::",
+            "2402:4e00:1::"
+          ]
+        }
+      ]
+    }
+  ]
+}

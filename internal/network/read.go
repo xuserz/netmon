@@ -22,7 +22,12 @@ func Read(ctx context.Context, c config.Config, sort string, n int) ([]observati
 		return nil, observation.Totals{}, e
 	}
 	defer s.Close()
-	return s.View(ctx, sort, n)
+	rows, total, e := s.View(ctx, sort, n)
+	if e != nil {
+		return nil, total, e
+	}
+	e = NewLabeler(c).Annotate(rows)
+	return rows, total, e
 }
 func ReadIP(ctx context.Context, c config.Config, ip string) (observation.IP, error) {
 	s, e := openDisk(c, false)
@@ -30,7 +35,13 @@ func ReadIP(ctx context.Context, c config.Config, ip string) (observation.IP, er
 		return observation.IP{}, e
 	}
 	defer s.Close()
-	return s.Show(ctx, ip)
+	row, e := s.Show(ctx, ip)
+	if e != nil {
+		return row, e
+	}
+	rows := []observation.IP{row}
+	e = NewLabeler(c).Annotate(rows)
+	return rows[0], e
 }
 func ReadPeers(ctx context.Context, c config.Config) ([]Peer, error) {
 	s, e := openDisk(c, false)
@@ -42,14 +53,14 @@ func ReadPeers(ctx context.Context, c config.Config) ([]Peer, error) {
 }
 func csvFields(row observation.IP) []string {
 	reasons, _ := json.Marshal(row.Reasons)
-	return []string{row.IP, strconv.FormatInt(row.Packets, 10), strconv.FormatInt(row.Bytes, 10), strconv.FormatInt(row.TCP, 10), strconv.FormatInt(row.SYN, 10), strconv.FormatInt(row.UDP, 10), strconv.FormatInt(row.ICMP, 10), time.Unix(row.First, 0).UTC().Format(time.RFC3339), time.Unix(row.Last, 0).UTC().Format(time.RFC3339), strconv.Itoa(row.Score), string(reasons), strconv.FormatBool(row.Partial)}
+	return []string{row.IP, strconv.FormatInt(row.Packets, 10), strconv.FormatInt(row.Bytes, 10), strconv.FormatInt(row.TCP, 10), strconv.FormatInt(row.SYN, 10), strconv.FormatInt(row.UDP, 10), strconv.FormatInt(row.ICMP, 10), time.Unix(row.First, 0).UTC().Format(time.RFC3339), time.Unix(row.Last, 0).UTC().Format(time.RFC3339), strconv.Itoa(row.Score), string(reasons), strconv.FormatBool(row.Partial), row.ServerName, row.ServerSource, strconv.FormatBool(row.Whitelisted), row.WhitelistDescription}
 }
 func Export(ctx context.Context, c config.Config, path string) error {
 	target, e := filepath.Abs(path)
 	if e != nil {
 		return e
 	}
-	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, RuntimeBase(c)} {
+	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, c.LabelsFile, RuntimeBase(c)} {
 		if base == "" {
 			continue
 		}
@@ -86,7 +97,7 @@ func Export(ctx context.Context, c config.Config, path string) error {
 	defer os.Remove(f.Name())
 	defer f.Close()
 	writer := csv.NewWriter(f)
-	if e = writer.Write([]string{"ip", "packets", "bytes", "tcp_packets", "tcp_syn", "udp_packets", "icmp_packets", "first_seen", "last_seen", "suspicion", "reasons", "partial"}); e != nil {
+	if e = writer.Write([]string{"ip", "packets", "bytes", "tcp_packets", "tcp_syn", "udp_packets", "icmp_packets", "first_seen", "last_seen", "suspicion", "reasons", "partial", "server_name", "server_source", "whitelisted", "whitelist_description"}); e != nil {
 		return e
 	}
 	rows, e := copy.DB.QueryContext(ctx, "SELECT "+ipColumns+" FROM net_ips ORDER BY priority DESC,ip")
@@ -95,11 +106,16 @@ func Export(ctx context.Context, c config.Config, path string) error {
 	}
 	defer rows.Close()
 	now := time.Now()
+	annotate, e := NewLabeler(c).Snapshot()
+	if e != nil {
+		return e
+	}
 	for rows.Next() {
 		row, _, err := scanIP(rows, s.policy, now)
 		if err != nil {
 			return err
 		}
+		annotate(&row)
 		if e = writer.Write(csvFields(row)); e != nil {
 			return e
 		}
@@ -163,11 +179,16 @@ func List(ctx context.Context, c config.Config, directory, kind string, visit fu
 	}
 	defer rows.Close()
 	now := time.Now()
+	annotate, e := NewLabeler(c).Snapshot()
+	if e != nil {
+		return totals, e
+	}
 	for rows.Next() {
 		row, _, err := scanIP(rows, s.policy, now)
 		if err != nil {
 			return totals, err
 		}
+		annotate(&row)
 		if e = visit(row); e != nil {
 			return totals, e
 		}

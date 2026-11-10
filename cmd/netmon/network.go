@@ -20,8 +20,12 @@ import (
 	"netmon/internal/ui"
 )
 
-func networkFetch(ctx context.Context, c config.Config, kind string, n int, local bool) (live.Response, error) {
+func networkFetch(ctx context.Context, c config.Config, kind string, n int, local bool, labels *network.Labeler) (live.Response, error) {
 	if r, e := live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "top", Sort: kind, Limit: n, Local: local}); e == nil && r.Network {
+		r.NetworkIPs = append([]observation.IP(nil), r.NetworkIPs...)
+		if e := labels.Annotate(r.NetworkIPs); e != nil {
+			return live.Response{}, e
+		}
 		return r, nil
 	}
 	if c.Storage.Mode == "forward" || local {
@@ -33,10 +37,14 @@ func networkFetch(ctx context.Context, c config.Config, kind string, n int, loca
 	}
 	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode}}, nil
 }
+func printNetworkRow(w io.Writer, r observation.IP) error {
+	_, e := fmt.Fprintf(w, "%-39s %5d %16s %16s %12s %-9s %s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)), r.Tag(), r.Label())
+	return e
+}
 func printNetworkRows(w io.Writer, rows []observation.IP) {
-	fmt.Fprintf(w, "%-39s %5s %16s %16s %12s\n", "SOURCE IP", "RISK", "PACKETS", "IP BYTES", "TCP SYN")
+	fmt.Fprintf(w, "%-39s %5s %16s %16s %12s %-9s %s\n", "SOURCE IP", "RISK", "PACKETS", "IP BYTES", "TCP SYN", "TYPE", "DESCRIPTION")
 	for _, r := range rows {
-		fmt.Fprintf(w, "%-39s %5d %16s %16s %12s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)))
+		printNetworkRow(w, r)
 	}
 }
 func printNetworkTotals(w io.Writer, r live.Response) {
@@ -76,6 +84,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		return e
 	}
 	_ = startup
+	labels := network.NewLabeler(c)
 	if *n < 1 || *n > 1000 {
 		return errors.New("network -n must be 1..1000")
 	}
@@ -87,6 +96,9 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 	}
 	if command == "check" {
 		if e := network.Check(c); e != nil {
+			return e
+		}
+		if e := labels.Annotate(nil); e != nil {
 			return e
 		}
 		if c.Network.Capture {
@@ -134,8 +146,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		defer cancel()
 		printNetworkRows(out, nil)
 		totals, e := network.List(ctx, c, *snapshotDirectory, *sort, func(row observation.IP) error {
-			_, e := fmt.Fprintf(out, "%-39s %5d %16s %16s %12s\n", row.IP, row.Score, commas(fmt.Sprint(row.Packets)), commas(fmt.Sprint(row.Bytes)), commas(fmt.Sprint(row.SYN)))
-			return e
+			return printNetworkRow(out, row)
 		})
 		if e != nil {
 			return e
@@ -193,7 +204,18 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		if e != nil {
 			return e
 		}
+		one := []observation.IP{row}
+		if e = labels.Annotate(one); e != nil {
+			return e
+		}
+		row = one[0]
 		printNetworkRows(out, []observation.IP{row})
+		if row.ServerName != "" {
+			fmt.Fprintf(out, "Server: %s (%s)\n", row.ServerName, row.ServerSource)
+		}
+		if row.Whitelisted {
+			fmt.Fprintf(out, "Whitelist: %s (counts and suspicion are retained)\n", row.WhitelistDescription)
+		}
 		fmt.Fprintf(out, "Suspicion: %d/100 (heuristic)\nFirst seen: %s\nLast seen: %s\nEvidence at: %s\nPartial evidence: %t\n", row.Score, time.Unix(row.First, 0).Format(time.RFC3339), time.Unix(row.Last, 0).Format(time.RFC3339), timestamp(time.Unix(row.EvidenceAt, 0)), row.Partial)
 		if len(row.Reasons) == 0 {
 			fmt.Fprintln(out, "No threshold signal observed; this is not proof that an IP is safe.")
@@ -218,10 +240,10 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		defer stop()
 		_, envNoColor := os.LookupEnv("NO_COLOR")
 		return ui.Run(background, ui.Options{Network: true, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, func(ctx context.Context, sort string) (live.Response, error) {
-			return networkFetch(ctx, c, sort, *n, *local)
+			return networkFetch(ctx, c, sort, *n, *local, labels)
 		})
 	}
-	r, e := networkFetch(ctx, c, *sort, *n, *local)
+	r, e := networkFetch(ctx, c, *sort, *n, *local, labels)
 	if e != nil {
 		return e
 	}

@@ -1,6 +1,7 @@
 """Network-mode source, two storage replicas, RAM-only forwarding and risk scores."""
 from contextlib import closing
 import json
+import csv
 import os
 from pathlib import Path
 import signal
@@ -48,7 +49,7 @@ class NetworkTests(unittest.TestCase):
         runtime = directory / "run"
         database = directory / "statistics-must-not-exist" / "stats.db"
         config = directory / "config.yaml"
-        config.write_text(f"mode: network\ninterface: lo\ndatabase: {database}\nflush_interval: 1s\n"
+        config.write_text(f"mode: network\nlabels_file: {directory / 'labels.yaml'}\ninterface: lo\ndatabase: {database}\nflush_interval: 1s\n"
                           "max_database_mb: 16\nmax_activity_ips: 64\n"
                           f"storage:\n  mode: {role}\n  retention: 24h\n  queue_memory_mb: 1\n"
                           f"network:\n  capture: {str(capture).lower()}\n  runtime_directory: {runtime}\n"
@@ -222,3 +223,39 @@ class NetworkTests(unittest.TestCase):
         result = self.command(node, "show", "::1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("::1", result.stdout)
+
+    def test_server_and_whitelist_descriptions_preserve_saved_statistics(self):
+        node = self.node("labels", "full", self.reserve(), [], capture=True)
+        node["config"].write_text(node["config"].read_text().replace("  ports:", "  rating:\n    pps_threshold: 1\n  ports:"))
+        self.start(node)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            for _ in range(100):
+                client.sendto(b"labelled activity", ("127.0.0.1", self.port))
+        self.wait_for(lambda: self.total(node) == 100)
+        for args in [("servers", "add", "127.0.0.1", "DNS node EU"),
+                     ("whitelist", "add", "127.0.0.1", "Uptime Kuma")]:
+            result = self.command(node, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.command(node, "show", "127.0.0.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for text in ("SERVER+WL", "DNS node EU", "Uptime Kuma", "Suspicion: 35/100"):
+            self.assertIn(text, result.stdout)
+        # Full top uses a cached snapshot, then applies the current address book.
+        self.wait_for(lambda: "Uptime Kuma" in self.command(node, "top", "--once").stdout)
+        result = self.command(node, "list", "--snapshot-dir", str(self.root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Uptime Kuma", result.stdout)
+        destination = self.root / "labels.csv"
+        result = self.command(node, "export", "--csv", str(destination))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with destination.open() as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual(rows[0]["server_name"], "DNS node EU")
+        self.assertEqual(rows[0]["whitelisted"], "true")
+        self.assertEqual(rows[0]["packets"], "100")
+        result = self.command(node, "whitelist", "remove", "127.0.0.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.command(node, "show", "127.0.0.1")
+        self.assertNotIn("Uptime Kuma", result.stdout)
+        self.assertIn("DNS node EU", result.stdout)
+        self.assertEqual(self.total(node), 100)

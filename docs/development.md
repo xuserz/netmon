@@ -63,6 +63,12 @@ when a migration reaches the SQLite page limit. Tests also cover SQLite fix
 version, export isolation and cleanup, SIGKILL recovery, bounded activity
 windows/eviction, and a health heartbeat during a blocked writer.
 
+Identity tests cover IPv4/IPv6/CIDR precedence, mapped addresses, strict catalog
+validation, protected paths, atomic edits with preserved permissions, concurrent
+writers, reloads, consistent export metadata, and server/whitelist independence.
+PTY/process tests exercise adding labels while a dashboard stays open, old
+catalog preservation during upgrades, and unchanged counters/risk after labeling.
+
 Network-mode tests additionally cover deterministic score tiers/decay, bounded
 queues, old ACKs racing with coalesced updates, eviction without count loss,
 retention/replay, transaction rollback, and policy mismatch. Process tests start
