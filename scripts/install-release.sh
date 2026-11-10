@@ -13,7 +13,7 @@ case "$(uname -m)" in
   aarch64|arm64) arch=arm64 ;;
   *) fail "Unsupported architecture: $(uname -m) (available: amd64, arm64)" ;;
 esac
-repository=${DNSMON_REPOSITORY:-xuserz/dns-stats}
+repository=${DNSMON_REPOSITORY:-xuserz/dnsmon}
 case "$repository" in
   ''|*[!A-Za-z0-9_./-]*|/*|*/|*/*/*|*..*) fail 'DNSMON_REPOSITORY must be OWNER/REPO.' ;;
   */*) ;;

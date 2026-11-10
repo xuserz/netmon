@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -25,7 +26,16 @@ func htons(v uint16) uint16 {
 func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 	iface, e := net.InterfaceByName(name)
 	if e != nil {
-		return nil, e
+		if errors.Is(e, unix.EPERM) || errors.Is(e, unix.EACCES) {
+			return nil, fmt.Errorf("cannot inspect interface %q: %w", name, e)
+		}
+		var names []string
+		if all, err := net.Interfaces(); err == nil {
+			for _, i := range all {
+				names = append(names, i.Name)
+			}
+		}
+		return nil, fmt.Errorf("interface %q not found (available: %s); edit interface in config.yaml", name, strings.Join(names, ", "))
 	}
 	if iface.Flags&net.FlagUp == 0 {
 		return nil, fmt.Errorf("interface %s is down", name)
@@ -44,7 +54,7 @@ func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 	}()
 	for _, opt := range []struct{ level, name, value int }{{unix.SOL_SOCKET, unix.SO_RCVBUF, bufferMB << 20}, {unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1}} {
 		if e = unix.SetsockoptInt(fd, opt.level, opt.name, opt.value); e != nil {
-			return nil, e
+			return nil, fmt.Errorf("socket option level=%d option=%d: %w", opt.level, opt.name, e)
 		}
 	}
 	if e = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 250000}); e != nil {

@@ -25,7 +25,7 @@ class ReleaseInstallTests(unittest.TestCase):
         self.marker = self.work / "installed"
         self.log = self.work / "downloads.jsonl"
         self.env = dict(os.environ, PATH=f"{self.fake_bin}:{os.environ['PATH']}",
-                        DNSMON_REPOSITORY="test-owner/dns-stats", DNSMON_VERSION="latest",
+                        DNSMON_REPOSITORY="test-owner/dnsmon", DNSMON_VERSION="latest",
                         DNSMON_TEST_MACHINE="x86_64", DNSMON_TEST_OS="Linux",
                         DNSMON_TEST_UID="0", DNSMON_TEST_ASSETS=str(self.assets),
                         DNSMON_TEST_MARKER=str(self.marker), DNSMON_TEST_LOG=str(self.log))
@@ -38,7 +38,7 @@ url = args[-1]
 with open(os.environ['DNSMON_TEST_LOG'], 'a') as f:
     f.write(json.dumps(args) + '\\n')
 if '--head' in args:
-    print('https://github.com/test-owner/dns-stats/releases/tag/build-12-1-abcdef12', end='')
+    print('https://github.com/test-owner/dnsmon/releases/tag/build-12-1-abcdef12', end='')
 else:
     output = pathlib.Path(args[args.index('--output') + 1])
     source = pathlib.Path(os.environ['DNSMON_TEST_ASSETS']) / url.rsplit('/', 1)[1]
@@ -165,7 +165,8 @@ class PackagingTests(unittest.TestCase):
             scripts.mkdir()
             shutil.copyfile(ROOT / "scripts/package-release.sh", scripts / "package-release.sh")
             inputs = ["bin/dnsmon", "dnsmon.yaml", "packaging/dnsmon.service", "README.md",
-                      "scripts/install.sh", "scripts/uninstall.sh", "scripts/install-release.sh"]
+                      "scripts/install.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
+                      "docs/configuration.md", "docs/operations.md", "docs/development.md"]
             for name in inputs:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)

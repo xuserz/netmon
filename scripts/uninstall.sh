@@ -7,6 +7,8 @@ rm -f /etc/systemd/system/dnsmon.service /usr/local/bin/dnsmon
 systemctl daemon-reload
 rm -f /usr/local/libexec/dnsmon/install-release.sh /usr/local/libexec/dnsmon/uninstall.sh
 rmdir /usr/local/libexec/dnsmon 2>/dev/null || true
-rm -f /usr/share/doc/dnsmon/README.md
+rm -f /usr/share/doc/dnsmon/README.md /usr/share/doc/dnsmon/dnsmon.yaml
+rm -f /usr/share/doc/dnsmon/docs/configuration.md /usr/share/doc/dnsmon/docs/operations.md /usr/share/doc/dnsmon/docs/development.md
+rmdir /usr/share/doc/dnsmon/docs 2>/dev/null || true
 rmdir /usr/share/doc/dnsmon 2>/dev/null || true
 printf '%s\n' 'Uninstalled. Configuration, statistics and the dnsmon system account are preserved.' 'Paths: /etc/dnsmon and /var/lib/dnsmon (or your configured database path).'

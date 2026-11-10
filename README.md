@@ -1,380 +1,182 @@
 # dnsmon
 
-Небольшой DNS-монитор для Linux VPS: один сервис и один исполняемый файл с CLI.
-Считает входящие DNS-сообщения UDP/TCP по IPv4/IPv6. Постоянно хранит только
-IP клиента, суммарный счётчик, время первого и последнего запроса.
+[![CI](https://github.com/xuserz/dnsmon/actions/workflows/release.yml/badge.svg)](https://github.com/xuserz/dnsmon/actions/workflows/release.yml)
 
-Нет HTTP-сервера, логов запросов, PCAP, доменов, ответов, GeoIP, WHOIS,
-почасовой истории, изменений firewall или автоматических блокировок.
-Работает независимо от AdGuard Home; его API и query log не нужны.
+Lightweight DNS client accounting for Linux.
 
-## Быстрый старт: Ubuntu / Debian
+dnsmon counts incoming DNS queries per client IP and keeps cumulative counters
+in SQLite. A background systemd service captures traffic; a terminal dashboard
+shows live activity, resource usage, and capture health.
 
-На сервере нужны Linux 4.20+ (PACKET_IGNORE_OUTGOING), systemd, `curl`, `tar`
-и `sha256sum`. **Go, C-компилятор и libsqlite3 на VPS не нужны**: GitHub Actions
-собирает полностью статические бинарники со встроенным SQLite для Linux
-**amd64** (Intel/AMD) и **arm64** (AArch64).
+Each client has exactly one database row: **IP address, request count, first seen,
+and last seen**. Domain names, individual queries, responses, and packet captures
+are never written to disk.
 
-После первого успешного workflow установите последний релиз одной командой:
+## Features
 
-```bash
-curl -fsSL https://github.com/xuserz/dns-stats/releases/latest/download/install-release.sh | sudo sh
+- UDP and TCP DNS over IPv4 and IPv6.
+- TCP stream reassembly, retransmission handling, and bounded IP fragment buffers.
+- Color terminal dashboard with live counters, request rate, CPU, memory, and loss diagnostics.
+- Batched SQLite writes, WAL readers, and configurable memory and database limits.
+- CLI lookup, rankings, totals, CSV export, and startup checks.
+- Static Linux binaries for **amd64** and **arm64**, with SQLite included.
+- Passive capture on one interface, including the host side of Docker-published DNS.
+
+## Install
+
+The release installer targets **Ubuntu/Debian with systemd**. It requires
+Linux 4.20+, `curl`, `tar`, and `sha256sum`. Go and a C compiler are only needed
+when [building from source](docs/development.md).
+
+```sh
+curl -fsSL https://github.com/xuserz/dnsmon/releases/latest/download/install-release.sh | sudo sh
 ```
 
-Если вы уже `root`, вместо `sudo sh` используйте `sh`. Если curl отсутствует,
-один раз установите его: `apt install -y curl ca-certificates`.
-Загрузчик определяет архитектуру, разрешает `latest` в конкретный тег,
-скачивает архив и проверяет его по `SHA256SUMS` до запуска установщика.
-Архив содержит бинарник, конфигурацию, unit, установщик и README.
-Скачанный файл проверяется командой `dnsmon version` до остановки работающего
-сервиса; бинарник заменяется атомарным переименованием.
+When running as root, use `sh` instead of `sudo sh`.
 
-При первой установке выберите интерфейс и включите сервис:
+The installer selects the architecture, verifies the archive's SHA-256 checksum,
+and installs the binary, service unit, and configuration. It preserves existing
+configuration and statistics. Release files are also available on the
+[Releases page](https://github.com/xuserz/dnsmon/releases).
 
-```bash
-ip -br address
-ip route get 1.1.1.1
-sudoedit /etc/dnsmon/config.yaml
-# Замените eth0 на ens3/enp1s0/...; при необходимости задайте IP и порт.
-sudo systemctl enable --now dnsmon
-sudo dnsmon status
-sudo journalctl -u dnsmon -n 30 --no-pager
-# Первые данные появятся после flush_interval, по умолчанию через 30 секунд.
-sudo dnsmon top
-```
+## Quick start
 
-Последующие обновления — одной командой, без Git и Go на сервере:
+1. Find the interface where client traffic enters the host:
 
-```bash
-sudo /usr/local/libexec/dnsmon/install-release.sh
-```
+   ```sh
+   ip -br address
+   ip route get 1.1.1.1
+   ```
 
-Можно также повторить исходную команду `curl ... | sudo sh`. Конфигурация и
-база сохраняются. Работающий сервис останавливается с фиксацией дельт и
-запускается снова; отключённый сервис установщик самостоятельно не включает.
-Во время перезапуска есть короткий перерыв в наблюдении трафика.
+2. Review `/etc/dnsmon/config.yaml`. The installer attempts to select the interface
+   from the default route. Verify it before starting the service:
 
-Если репозиторий уже склонирован, после `git pull` подходят и команды:
+   ```yaml
+   interface: ens3
+   destination_ip: ""
+   port: 53
+   ```
 
-```bash
-sudo ./scripts/install.sh --release  # всегда скачать последний релиз
-sudo ./scripts/install.sh            # локальный bin/dnsmon, иначе скачать релиз
-```
+   Use the interface shown after `dev` in the route output. For Docker, select
+   the ingress interface and the **published host port**, before DNAT.
 
-Для установки определённой сборки / отката бинарника:
+3. Check the configuration and start the service:
 
-```bash
-sudo env DNSMON_VERSION=build-12-1-abcdef12 /usr/local/libexec/dnsmon/install-release.sh
-```
+   ```sh
+   sudo dnsmon check --startup
+   sudo systemctl enable --now dnsmon
+   sudo dnsmon status
+   sudo dnsmon top
+   ```
 
-Загрузчик рассчитан на публичные GitHub Releases. Репозиторий можно переопределить
-переменной `DNSMON_REPOSITORY=owner/repo` (в том числе при обновлении).
-Для приватного репозитория скачайте архив и `SHA256SUMS` с авторизацией через
-GitHub, проверьте сумму, распакуйте и выполните `sudo ./scripts/install.sh`
-из архива — Go также не потребуется.
+Live counters appear as traffic arrives. SQLite is updated every 30 seconds by
+default. Only `dnsmon run` starts packet capture; inspection commands never start
+an additional monitor.
 
-Удаление программы с сохранением статистики:
+## Usage
 
-```bash
-sudo /usr/local/libexec/dnsmon/uninstall.sh
-# Или из клона репозитория: sudo ./scripts/uninstall.sh
-```
-
-Каталоги `/etc/dnsmon`, `/var/lib/dnsmon` и системный пользователь сохраняются
-намеренно. Скрипт никогда не удаляет накопленные данные.
-
-## Автоматические сборки и релизы GitHub
-
-Workflow [.github/workflows/release.yml](.github/workflows/release.yml) запускается
-при push, pull request и вручную из вкладки Actions. После push **в основную
-ветку репозитория** (автоматически определяется default branch, `main`/`master`
-не зашиты в workflow) он сам публикует новый релиз и помечает его `Latest`.
-Теги вручную создавать не нужно. До первого успешного запуска ссылки на релизы
-будут возвращать 404.
-
-Достаточно закоммитить и отправить изменения:
-
-```bash
-git add .
-git commit -m "Add GitHub Actions releases and binary installer"
-git push
-```
-
-Workflow выполняет `go mod verify`, `go vet`, race-тесты, тесты загрузчика и
-живой AF_PACKET/BPF-тест на loopback. Затем на нативных amd64/arm64 runners
-собирает статические бинарники через musl, проверяет их запуск, встроенную
-версию и отсутствие динамического линкования. Релиз появляется только после
-успешной сборки **обеих** архитектур. В остальных ветках и PR доступны проверки
-и временные Actions artifacts, публикация релиза не выполняется.
-
-В релизе:
-
-- `dnsmon_linux_amd64.tar.gz`;
-- `dnsmon_linux_arm64.tar.gz`;
-- `install-release.sh`;
-- `SHA256SUMS`.
-
-Версия имеет вид `build-<номер запуска>-<попытка>-<commit>`, например
-`build-12-1-abcdef12`, и выводится через `dnsmon version`. Каждый релиз имеет
-собственный тег и архивы; загрузчик использует один и тот же тег для архива и
-контрольной суммы, даже если параллельно опубликован следующий релиз.
-GitHub Actions получает `contents: write` только в job публикации и использует
-встроенный `GITHUB_TOKEN`; PAT, SSH-ключи и секреты VPS не нужны.
-Если организация запрещает публикацию через Actions, разрешите её в настройках
-политик репозитория/организации. Workflow не выполняет SSH-деплой на сервер.
-
-## Команды
-
-```bash
-dnsmon top
-dnsmon top -n 100
-dnsmon show 185.220.101.45
-dnsmon show 2001:db8::1
+```sh
+dnsmon top                         # Interactive live dashboard
+dnsmon top -n 100 --interval 1s     # More clients, faster refresh
+dnsmon top --once                  # One committed SQLite snapshot
+dnsmon top --no-color
+dnsmon show 192.0.2.10
+dnsmon show 2001:db8::10
 dnsmon stats
 dnsmon list
 dnsmon export --csv stats.csv
 dnsmon status
+dnsmon check
 ```
 
-По умолчанию данные читаются из `/var/lib/dnsmon/stats.db`. Установленная база
-доступна root и группе `dnsmon`, поэтому приведённые команды обычно запускают
-через `sudo`. Для локального доступа можно добавить пользователя в группу
-`dnsmon` и заново войти в сеанс; группа имеет доступ к каталогу данных.
+Use `sudo` or an account in the `dnsmon` group to access installed statistics.
+Global `--config FILE` and `--db FILE` options can appear before or after the command.
 
-```bash
-sudo usermod -aG dnsmon "$USER"
-# После нового входа:
-dnsmon top
-```
+### Live dashboard
 
-`--config FILE` и `--db FILE` допустимы до или после команды:
+| Key | Action |
+| --- | --- |
+| `q`, `Ctrl+C` | Exit |
+| `↑` / `↓`, `j` / `k` | Scroll |
+| `PageUp` / `PageDown`, `Home` / `End` | Navigate the client list |
+| Space | Pause or resume updates |
+| `r` | Refresh |
+| `c` | Toggle colors |
 
-```bash
-dnsmon --config /etc/dnsmon/config.yaml top -n 100
-dnsmon stats --db /absolute/path/stats.db
-sudo dnsmon --config /etc/dnsmon/config.yaml run  # вручную, в переднем плане
-```
+The dashboard refreshes every two seconds by default and supports up to 1,000
+rows. `NO_COLOR` disables colors. Redirecting `top` to a file or pipe automatically
+produces a single plain-text snapshot; `--once` selects that mode explicitly.
 
-Только `run` открывает сокет захвата и пишет базу. Остальные команды не запускают
-мониторинг; `status` вызывает `systemctl show dnsmon.service` и выводит состояние,
-PID и код выхода. Чтение базы выполняется через SQLite `mode=ro` и `query_only`.
-Каждая команда видит согласованный снимок WAL, пока сервис продолжает работать.
-`list` и CSV обрабатывают строки последовательно, без загрузки всех IP в RAM.
-Сортировка: requests DESC, затем ip ASC. Итог в `top` относится ко всей базе.
+`LIVE` includes uncommitted counters from the running service. `STORED` uses
+SQLite when the live feed is unavailable. Commands such as `stats`, `show`,
+`list`, and `export` read committed data and may lag behind the live dashboard.
 
-CLI отображает даты в локальном часовом поясе; SQLite хранит Unix time в секундах.
-CSV содержит `ip,requests,first_seen,last_seen`; даты в UTC RFC3339, числа без
-разделителей. Экспорт заменяет целевой файл атомарно через временный файл с
-правами 0600. Путь к базе и её служебным файлам нельзя использовать для экспорта.
+## Configuration
 
-## Где захватывать трафик, включая Docker
+The configuration file is `/etc/dnsmon/config.yaml`. See
+[dnsmon.yaml](dnsmon.yaml) for defaults and the
+[configuration reference](docs/configuration.md) for all options.
 
-AF_PACKET SOCK_DGRAM привязан **к одному явно указанному интерфейсу**.
-Исходящие наблюдения отбрасываются в ядре и дополнительно в приложении.
-Промискуитет не включается. Классический BPF отбрасывает остальные протоколы
-и обычные UDP/TCP-пакеты с другим портом. Фрагменты и цепочки IPv6 extension
-headers требуют дополнительной фильтрации в приложении.
+After changing it:
 
-Для DNS, опубликованного Docker, выберите внешний интерфейс VPS, например
-`ens3`, и **порт на хосте до DNAT**. При публикации `5353:53/udp` укажите
-`port: 5353`. `destination_ip` — адрес назначения, видимый на этом интерфейсе до
-DNAT; пустая строка разрешает все адреса. Допускается один конкретный IPv4 или
-IPv6, без DNS-имени, маски и zone ID.
-
-```yaml
-interface: ens3
-destination_ip: "203.0.113.10"
-port: 53
-```
-
-Так внешний запрос учитывается один раз с исходным клиентским IP. Сервис не
-слушает одновременно `ens3`, `docker0` и `veth*`. Значение `any` запрещено.
-Сокет привязан к ifindex: после удаления/пересоздания интерфейса перезапустите
-службу. Для VLAN выбирайте VLAN-интерфейс (`ens3.100`), а не тегированный trunk;
-инкапсулированный трафик на trunk, туннели и overlay на внешнем интерфейсе
-не декодируются.
-
-Один интерфейс определяет границу наблюдения. Запросы из контейнеров, с
-loopback или другого NIC, которые не проходят выбранный интерфейс, не попадут
-в статистику. Для анализа контейнерных клиентов можно выбрать конкретный bridge
-как отдельную границу вместо внешнего интерфейса, но адрес может уже быть
-изменён NAT. За внешним NAT/прокси виден адрес NAT/прокси, а не конечного клиента.
-`lo` поддерживается: исходящая копия отбрасывается, входящая считается один раз.
-Перед эксплуатацией проверьте маршрут реальных клиентов.
-
-## Что считается запросом
-
-- UDP: одна полная DNS-датаграмма с заголовком не короче 12 байт и QR=0,
-  направленная на настроенный порт. Повторно отправленная UDP-датаграмма — ещё
-  один пришедший запрос. DNS transaction ID не служит ключом дедупликации.
-- TCP: одно DNS-сообщение с двухбайтовым префиксом длины и QR=0. Длина и тело
-  могут приходить раздельно; несколько сообщений могут находиться в одном
-  сегменте. TCP sequence numbers устраняют повторный учёт retransmission и
-  позволяют собрать переставленные и перекрывающиеся сегменты.
-- IPv4 options, IPv6 Hop-by-Hop / Routing / Destination Options / AH headers
-  и фрагментация поддерживаются с ограничениями буферов. ESP не расшифровывается.
-  Перекрывающиеся IP-фрагменты отвергаются; точный дубликат фрагмента игнорируется
-  до завершения сборки. Неполные наборы удаляются по таймауту.
-
-Это пассивное наблюдение пришедшего трафика, включая запросы, которые затем
-может отклонить firewall или DNS-сервер. Монитор не подтверждает обработку сервером
-и не выполняет полную семантическую валидацию DNS, проверку контрольных сумм или
-декодирование имён. Пакет произвольного содержания на DNS-порту с подходящим
-заголовком может быть учтён как DNS. Ответы (QR=1) не учитываются даже на порту 53.
-DoH, DoT, DNSCrypt и IPv6 jumbograms не анализируются.
-
-Для точной границы DNS-over-TCP монитор должен увидеть SYN. Соединение,
-начавшееся до запуска службы или истёкшее из её буфера по idle timeout,
-пропускается до нового SYN: угадывание границы могло бы создать ложные запросы.
-Fast Open с данными в SYN поддерживается. Перезапуск монитора не восстанавливает
-незавершённые TCP-потоки и фрагменты. TCP-потоки без активности дольше
-`reassembly_timeout` удаляются, в том числе завершённые; подстройте таймаут и
-лимит потоков под реальные долгоживущие соединения.
-
-## Хранилище, лимиты и восстановление
-
-Единственная пользовательская таблица:
-
-```sql
-CREATE TABLE clients (
-    ip TEXT PRIMARY KEY,
-    requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
-    first_seen INTEGER NOT NULL,
-    last_seen INTEGER NOT NULL
-);
-```
-
-IP нормализуется (`IPv4-mapped IPv6` приводится к IPv4). Для каждого IP одна
-строка за всё время. В RAM хранится только текущая порция дельт; каждые 30 секунд
-одна транзакция `INSERT ... ON CONFLICT DO UPDATE` добавляет счётчики,
-сохраняя минимум first_seen и максимум last_seen. При достижении
-`max_pending_ips` порция фиксируется раньше, а не растёт без ограничения.
-Одновременный запуск двух `run` на одной базе запрещён advisory lock-файлом.
-Не запускайте несколько баз на одной границе захвата, если затем собираетесь
-суммировать их статистику.
-
-WAL + `synchronous=FULL` защищают уже зафиксированные транзакции при обычных
-гарантиях fsync диска и файловой системы. SIGINT/SIGTERM дожидаются текущей
-обработки и фиксируют накопленные дельты. При SIGKILL, аварии процесса, потере
-питания или ошибке диска можно потерять **нефиксированную порцию**, обычно за
-последние 30 секунд. Периодическое чтение CLI видит только зафиксированные данные.
-Для резервного копирования остановите службу и скопируйте БД либо используйте
-SQLite backup API / команду `.backup`; не копируйте один основной файл у живого
-WAL-соединения без согласованного снимка.
-
-`max_database_mb` (по умолчанию 64 MiB) задаёт жёсткий предел **основного файла**
-через `PRAGMA max_page_count`; он включает таблицу и её индекс первичного ключа.
-По достижении лимита запись всей текущей порции откатывается, сервис завершает
-работу с явной ошибкой в journald. Уже сохранённые строки не удаляются.
-То же поведение при полном диске, ошибке записи или длительной блокировке базы.
-Увеличьте лимит/освободите место и перезапустите службу. Неудавшаяся порция
-остаётся только в RAM до выхода и не может быть гарантированно сохранена при
-недоступной записи; в журнал содержимое порции не выводится.
-
-`max_wal_mb` (16 MiB) — отдельный порог обслуживания WAL, **не жёсткий лимит
-суммы файлов**. Выполняются автоматические checkpoint; если WAL превысил порог,
-перед следующей непустой записью выполняется TRUNCATE checkpoint. Если читатель
-удерживает снимок и не даёт сократить WAL, монитор останавливается с ошибкой,
-вместо дальнейшего роста файла. WAL может превысить порог на одну порцию
-(её размер ограничен `max_pending_ips` и пределом основной БД). `-shm`, lock-файл,
-временные файлы SQLite для сортировки CLI, CSV и журналы systemd находятся вне
-лимита основного файла. `journal_size_limit` не является жёсткой квотой WAL.
-Не оставляйте долгие транзакции чтения открытыми. При строгой дисковой квоте
-оставьте запас под WAL/служебные файлы или примените квоту файловой системы.
-
-Счётчик насыщается на `9_223_372_036_854_775_807`, не переходит в отрицательное
-число; даты продолжают обновляться. Общая сумма в CLI использует целое число
-произвольной точности и не переполняется при суммировании нескольких IP.
-
-Размер базы определяется числом уникальных IP, а не числом запросов или месяцев.
-Несколько тысяч клиентов обычно занимают гораздо меньше 100 MiB, но фиксированной
-гарантии на полгода без оценки числа клиентов нет.
-
-## Ресурсы и перегрузка
-
-Зависимости: `go-sqlite3` (включённый SQLite через CGO), `x/sys/unix`, `yaml.v3`.
-libpcap не нужен. UDP-путь не копирует DNS payload в долговременный буфер.
-Один receive loop, один переиспользуемый буфер пакета, одна SQLite connection
-на процесс. Фиксация порции выполняется в том же цикле: пакеты в это время
-ожидают в ограниченном socket buffer, отдельная неограниченная очередь отсутствует.
-
-Основные параметры приведены в [dnsmon.yaml](dnsmon.yaml):
-
-| Параметр | По умолчанию | Поведение |
-|---|---:|---|
-| `max_pending_ips` | 10000 | Ранний flush при новом IP сверх порции |
-| `socket_buffer_mb` | 2 | SO_RCVBUF; Linux удваивает значение и может ограничить rmem_max |
-| `max_tcp_flows` | 1024 | Новые потоки при заполнении пропускаются |
-| `max_tcp_bytes` | 8388608 | Общий бюджет полезных байт незавершённой TCP-сборки |
-| `max_fragment_sets` | 256 | Новые наборы при заполнении пропускаются |
-| `max_fragment_bytes` | 2097152 | Общий бюджет полезных байт IP-фрагментов |
-| `reassembly_timeout` | 2m | Удаление неактивных TCP-потоков/фрагментов |
-
-Дополнительно: до 128 ожидающих сегментов и 131074 полезных байт на TCP-поток,
-до 256 частей и 65535 байт на IP-датаграмму; цепочка extension headers до 8.
-Бюджеты полезных байт не включают накладные расходы Go map/slice, временные
-копирования при сборке, SQLite и socket memory ядра. Цель RAM 20–40 MiB при
-умеренном числе клиентов правдоподобна, но не является измеренной гарантией для
-всех архитектур и нагрузок. Увеличение лимитов увеличивает возможное потребление.
-CLI-сортировка использует файловый temp_store, SQLite page cache ограничен 1 MiB.
-
-Раз в 10 секунд служба проверяет PACKET_STATISTICS. Потери в сокете, повреждённые
-пакеты, неполная сборка, лимиты и пропущенные midstream TCP-сегменты отражаются
-агрегированными WARNING в journald, без адресов, доменов и содержимого запросов.
-Это не дополнительная аналитическая таблица. Неограниченных буферов для повтора
-нет. После потери TCP-сегмента поздние данные могут ждать retransmission и
-затем истечь; абсолютную полноту счёта при перегрузке пассивный захват не гарантирует.
-Потери до AF_PACKET (например, NIC) могут не попадать в PACKET_STATISTICS.
-
-Проверяйте `journalctl -u dnsmon` и `systemctl show dnsmon -p MemoryCurrent`.
-Если наблюдаются потери, проверьте загруженность диска/CPU, SO_RCVBUF и
-`net.core.rmem_max`. Изменение sysctl оставлено администратору, программа его
-не выполняет. Служба имеет только CAP_NET_RAW, работает от `dnsmon` и пишет
-в StateDirectory. Для другой директории БД измените systemd-права доступа
-(`ReadWritePaths=`) и владельца каталога. Повторяющиеся ошибки ограничены
-systemd StartLimit; после исправления причины:
-
-```bash
-sudo systemctl reset-failed dnsmon
+```sh
+sudo dnsmon check --startup
 sudo systemctl restart dnsmon
 ```
 
-## Сборка одного бинарного файла и проверки
+Capture is limited to incoming traffic on one selected interface and port.
+DoH, DoT, DNSCrypt, and encrypted DNS payloads are not decoded. For Docker,
+multiple interfaces, VLANs, and TCP limitations, see
+[capture scope](docs/configuration.md#capture-scope).
 
-Для разработчика на Ubuntu/Debian: установите Go 1.25+ и `build-essential`.
-На сервере при установке релиза они не нужны.
+## Update and uninstall
 
-```bash
-make build                         # bin/dnsmon, SQLite включён
-# Для локальной сборки нужны Go 1.25+ и C-компилятор; на VPS это не требуется.
-./bin/dnsmon version
-make check                         # go vet + тесты с race detector
-python3 -m unittest discover -s scripts/tests -v  # тесты установки релизов
-# Тесты ядрового AF_PACKET-захвата на loopback с временными UDP-портами:
-sudo env DNSMON_INTEGRATION=1 go test -v ./internal/capture
-# С правами обычного пользователя AF_PACKET-тесты пропускаются.
+Update to the latest published release:
 
-go test ./internal/packet -fuzz FuzzFeed -fuzztime 10s
+```sh
+sudo /usr/local/libexec/dnsmon/install-release.sh
 ```
 
-Обычная сборка требует glibc на целевой машине; собирайте на той же или более
-старой версии Ubuntu/Debian. `CGO_ENABLED=0` для этой реализации не подходит.
-Для полностью статического бинарника (без зависимости от glibc целевого хоста):
+The installer preserves configuration and data, restarts an active service, and
+restores the previous binary and unit if the updated service fails its startup
+health checks. An inactive service is not automatically enabled.
 
-```bash
-sudo apt install -y musl-tools
-make static VERSION=local
-file bin/dnsmon
+Uninstall the program:
+
+```sh
+sudo /usr/local/libexec/dnsmon/uninstall.sh
 ```
 
-Тесты покрывают UDP IPv4/IPv6, исключение ответов, порт/IP назначения,
-IPv4 options, IPv6 extensions и фрагменты, дубликаты/перекрытия фрагментов,
-TCP framing, несколько сообщений, out-of-order/retransmission, wrap sequence
-numbers, SYN data, RST, отсутствие SYN, лимиты и таймауты. Проверки SQLite
-покрывают WAL-снимок во время записи, перезапуск, насыщение счётчика,
-атомарный откат при лимите размера; CLI — read-only доступ, суммы и CSV.
+Uninstalling retains the database, configuration, and service account. See
+[operations](docs/operations.md) for version selection, backups, and troubleshooting.
 
-Механика захвата: [packet(7)](https://man7.org/linux/man-pages/man7/packet.7.html),
-[Linux socket filtering](https://www.kernel.org/doc/html/latest/networking/filter.html).
-Гарантии и обслуживание хранилища: [SQLite WAL](https://sqlite.org/wal.html),
-[SQLite PRAGMA](https://sqlite.org/pragma.html).
+## Development
+
+Source builds require **Go 1.25+**, a C compiler, and Make. Python 3 is used for
+installer and terminal integration tests.
+
+```sh
+git clone https://github.com/xuserz/dnsmon.git
+cd dnsmon
+make build
+make check
+python3 -m unittest discover -s scripts/tests -v
+```
+
+Changes and pull requests are welcome. Include a description of the problem,
+reproduction steps where applicable, and relevant tests. Follow the
+[development guide](docs/development.md) for static builds, network integration
+tests, and load testing.
+
+GitHub Actions checks pushes and pull requests. Successful pushes to the default
+branch publish tested amd64 and arm64 release bundles automatically.
+
+## Documentation
+
+- [Configuration and capture scope](docs/configuration.md)
+- [Operations, storage, and troubleshooting](docs/operations.md)
+- [Development, testing, and releases](docs/development.md)
+
+## License
+
+The repository does not currently declare a project license.

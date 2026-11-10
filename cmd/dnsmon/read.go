@@ -41,7 +41,7 @@ func export(tx *sql.Tx, dbPath, path string, w io.Writer) error {
 		dbPaths = append(dbPaths, real)
 	}
 	for _, base := range dbPaths {
-		for _, suffix := range []string{"", "-wal", "-shm", ".lock"} {
+		for _, suffix := range []string{"", "-wal", "-shm", ".lock", ".sock"} {
 			target := base + suffix
 			resolved, _ := filepath.EvalSymlinks(abs)
 			same := abs == target || resolved == target

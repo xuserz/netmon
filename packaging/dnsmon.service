@@ -10,6 +10,7 @@ StartLimitBurst=3
 Type=simple
 User=dnsmon
 Group=dnsmon
+ExecStartPre=/usr/local/bin/dnsmon --config /etc/dnsmon/config.yaml check --startup
 ExecStart=/usr/local/bin/dnsmon --config /etc/dnsmon/config.yaml run
 Restart=on-failure
 RestartSec=10s

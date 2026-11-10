@@ -18,3 +18,6 @@ max_tcp_bytes: 8388608
 max_fragment_sets: 256
 max_fragment_bytes: 2097152
 reassembly_timeout: 2m
+
+# Retain clean persistent TCP connections longer than incomplete reassembly.
+tcp_idle_timeout: 10m

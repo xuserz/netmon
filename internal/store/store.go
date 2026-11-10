@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -25,9 +26,10 @@ type Delta struct {
 	First, Last int64
 }
 type Client struct {
-	IP          string
-	Requests    int64
-	First, Last int64
+	IP       string `json:"ip"`
+	Requests int64  `json:"requests"`
+	First    int64  `json:"first_seen"`
+	Last     int64  `json:"last_seen"`
 }
 type Store struct {
 	DB       *sql.DB
@@ -91,7 +93,7 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 		if actual != maxPages {
 			return nil, errors.New("could not apply SQLite page limit")
 		}
-		for _, statement := range []string{"PRAGMA wal_autocheckpoint=256", fmt.Sprintf("PRAGMA journal_size_limit=%d", s.walLimit), schema} {
+		for _, statement := range []string{"PRAGMA wal_autocheckpoint=256", fmt.Sprintf("PRAGMA journal_size_limit=%d", s.walLimit), schema, "CREATE INDEX IF NOT EXISTS clients_rank ON clients(requests DESC, ip ASC)"} {
 			if _, err = db.Exec(statement); err != nil {
 				return nil, err
 			}
@@ -103,42 +105,51 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 
 func (s *Store) Close() error { return s.DB.Close() }
 
-func (s *Store) Flush(batch map[netip.Addr]Delta) error {
+func (s *Store) Flush(batch map[netip.Addr]Delta) error { _, e := s.FlushBatch(batch); return e }
+
+func (s *Store) FlushBatch(batch map[netip.Addr]Delta) (Change, error) {
 	if len(batch) == 0 {
-		return nil
+		return Change{}, nil
 	}
 	if st, e := os.Stat(s.path + "-wal"); e == nil && st.Size() > s.walLimit {
 		// A long reader can pin WAL pages. Never keep appending without a bound.
 		var busy, log, done int
 		if e = s.DB.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done); e != nil {
-			return e
+			return Change{}, e
 		}
 		if busy != 0 {
-			return errors.New("WAL limit reached and a reader prevents checkpoint; monitoring stopped; close long readers and restart")
+			return Change{}, errors.New("WAL limit reached and a reader prevents checkpoint; monitoring stopped; close long readers and restart")
 		}
 	}
 	tx, e := s.DB.Begin()
 	if e != nil {
-		return e
+		return Change{}, e
 	}
 	defer tx.Rollback()
+	existing, e := lookup(context.Background(), tx, batch)
+	if e != nil {
+		return Change{}, e
+	}
 	stmt, e := tx.Prepare(`INSERT INTO clients(ip,requests,first_seen,last_seen) VALUES(?,?,?,?)
  ON CONFLICT(ip) DO UPDATE SET
  requests=CASE WHEN clients.requests > 9223372036854775807-excluded.requests THEN 9223372036854775807 ELSE clients.requests+excluded.requests END,
  first_seen=min(clients.first_seen,excluded.first_seen), last_seen=max(clients.last_seen,excluded.last_seen)`)
 	if e != nil {
-		return e
+		return Change{}, e
 	}
 	defer stmt.Close()
 	for ip, d := range batch {
 		if d.Requests < 0 {
-			return errors.New("negative counter delta")
+			return Change{}, errors.New("negative counter delta")
 		}
 		if _, e = stmt.Exec(ip.String(), d.Requests, d.First, d.Last); e != nil {
-			return fmt.Errorf("flush failed (disk or configured DB limit?): %w", e)
+			return Change{}, fmt.Errorf("flush failed (disk or configured DB limit?): %w", e)
 		}
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return Change{}, e
+	}
+	return changes(existing, batch), nil
 }
 
 func Add(batch map[netip.Addr]Delta, ip netip.Addr, n int64, ts int64) {

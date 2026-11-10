@@ -54,10 +54,12 @@ func TestReadCommandsAndExport(t *testing.T) {
 	if len(rows[0]) != 4 || rows[1][2] != "1970-01-01T00:01:40Z" {
 		t.Fatal(rows)
 	}
-	if e = run([]string{"--db", path, "export", "--csv", path}, &out, &out); e == nil {
-		t.Fatal("export allowed overwriting DB")
+	for _, target := range []string{path, path + ".sock"} {
+		if e = run([]string{"--db", path, "export", "--csv", target}, &out, &out); e == nil {
+			t.Fatal("export allowed overwriting service state", target)
+		}
 	}
-	for _, args := range [][]string{{"top", "-n", "0"}, {"show", "invalid"}, {"show", "192.0.2.99"}, {"list", "unexpected"}, {"export"}, {"unknown"}} {
+	for _, args := range [][]string{{"top", "-n", "0"}, {"show", "invalid"}, {"show", "192.0.2.99"}, {"list", "unexpected"}, {"export"}, {"unknown"}, {"top", "--once", "--watch"}, {"top", "--interval", "100ms"}, {"top", "--watch"}} {
 		if e = run(append([]string{"--db", path}, args...), &out, &out); e == nil {
 			t.Fatal("expected error", args)
 		}

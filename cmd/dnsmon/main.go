@@ -9,7 +9,6 @@ import (
 	"io"
 	"math/big"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -28,12 +27,14 @@ const usage = `dnsmon — lightweight Linux DNS client counters
 Usage: dnsmon [--config /etc/dnsmon/config.yaml] [--db /path/stats.db] COMMAND
 
   run                  Run the foreground monitor (used by systemd)
-  top [-n 20]          Most active IP addresses
+  top [-n 20]          Live, colorful terminal dashboard (q quits)
+  top --once           Print one committed snapshot; pipes use this automatically
   show IP              One IPv4/IPv6 address
   stats                Global totals
   list                 All clients, ordered by count
   export --csv FILE    Export a consistent snapshot to CSV
-  status               Query the dnsmon systemd service
+  status               Service state and live capture diagnostics
+  check [--startup]    Read-only configuration and runtime checks
   version              Print version
 
 Read commands never start a capture. Global flags may also follow COMMAND.
@@ -86,25 +87,19 @@ func run(args []string, out, errOut io.Writer) error {
 		fmt.Fprintln(out, version)
 		return nil
 	}
-	if command == "status" {
-		if len(rest) > 0 {
-			return errors.New("status takes no arguments")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "systemctl", "show", "dnsmon.service", "--no-pager", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus")
-		cmd.Stdout = out
-		cmd.Stderr = errOut
-		return cmd.Run()
-	}
+
 	switch command {
-	case "run", "top", "show", "stats", "list", "export":
+	case "run", "top", "show", "stats", "list", "export", "status", "check":
 	default:
 		return fmt.Errorf("unknown command %q; use dnsmon help", command)
 	}
-	c, e := config.Load(path, explicit || command == "run")
+	c, e := config.Load(path, explicit || command == "run" || command == "check")
 	if e != nil {
-		return e
+		if command != "status" {
+			return e
+		}
+		fmt.Fprintf(errOut, "Configuration error: %v\n", e)
+		c = config.Default()
 	}
 	if dbPath != "" {
 		p, err := filepath.Abs(dbPath)
@@ -112,6 +107,15 @@ func run(args []string, out, errOut io.Writer) error {
 			return err
 		}
 		c.Database = p
+	}
+	if command == "status" {
+		if len(rest) > 0 {
+			return errors.New("status takes no arguments")
+		}
+		return status(c, out, errOut)
+	}
+	if command == "check" {
+		return check(c, rest, out, errOut)
 	}
 	if command == "run" {
 		if len(rest) > 0 {
@@ -125,9 +129,15 @@ func run(args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	limit := 20
+	once, watch, noColor := false, false, false
+	interval := 2 * time.Second
 	csvPath := ""
 	if command == "top" {
-		fs.IntVar(&limit, "n", 20, "number of clients")
+		fs.IntVar(&limit, "n", 20, "number of clients (up to 1000 in live mode)")
+		fs.BoolVar(&once, "once", false, "print one committed SQLite snapshot")
+		fs.BoolVar(&watch, "watch", false, "require an interactive live display")
+		fs.BoolVar(&noColor, "no-color", false, "disable color")
+		fs.DurationVar(&interval, "interval", 2*time.Second, "live refresh interval (250ms..1m)")
 	}
 	if command == "export" {
 		fs.StringVar(&csvPath, "csv", "", "output CSV path")
@@ -150,6 +160,17 @@ func run(args []string, out, errOut io.Writer) error {
 	}
 	if command == "export" && csvPath == "" {
 		return errors.New("export requires --csv FILE")
+	}
+	if command == "top" {
+		if once && watch {
+			return errors.New("--once and --watch are mutually exclusive")
+		}
+		if interval < 250*time.Millisecond || interval > time.Minute {
+			return errors.New("--interval must be 250ms..1m")
+		}
+		if !once && (watch || terminalOutput(out)) {
+			return interactiveTop(out, c.Database, limit, interval, noColor)
+		}
 	}
 	s, e := store.Open(c.Database, false, 0, 0)
 	if e != nil {

@@ -27,12 +27,13 @@ type Config struct {
 	MaxFragments      int           `yaml:"max_fragment_sets"`
 	MaxFragmentBytes  int           `yaml:"max_fragment_bytes"`
 	ReassemblyTimeout time.Duration `yaml:"reassembly_timeout"`
+	TCPIdleTimeout    time.Duration `yaml:"tcp_idle_timeout"`
 }
 
 func Default() Config {
 	return Config{Interface: "eth0", Port: 53, Database: "/var/lib/dnsmon/stats.db", FlushInterval: 30 * time.Second,
 		MaxPending: 10000, MaxDatabaseMB: 64, MaxWALMB: 16, SocketBufferMB: 2,
-		MaxTCPFlows: 1024, MaxTCPBytes: 8 << 20, MaxFragments: 256, MaxFragmentBytes: 2 << 20, ReassemblyTimeout: 2 * time.Minute}
+		MaxTCPFlows: 1024, MaxTCPBytes: 8 << 20, MaxFragments: 256, MaxFragmentBytes: 2 << 20, ReassemblyTimeout: 2 * time.Minute, TCPIdleTimeout: 10 * time.Minute}
 }
 
 func Load(path string, required bool) (Config, error) {
@@ -84,6 +85,9 @@ func (c Config) Validate() error {
 	}
 	if c.ReassemblyTimeout < time.Second || c.ReassemblyTimeout > time.Hour {
 		return errors.New("reassembly_timeout must be between 1s and 1h")
+	}
+	if c.TCPIdleTimeout < time.Second || c.TCPIdleTimeout > time.Hour {
+		return errors.New("tcp_idle_timeout must be between 1s and 1h")
 	}
 	return nil
 }

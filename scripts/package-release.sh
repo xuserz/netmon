@@ -17,5 +17,6 @@ output_dir=$(CDPATH= cd -- "$2" && pwd)
 archive="$output_dir/dnsmon_linux_$arch.tar.gz"
 tar -C "$project_dir" -czf "$archive" \
   bin/dnsmon dnsmon.yaml packaging/dnsmon.service README.md \
-  scripts/install.sh scripts/uninstall.sh scripts/install-release.sh
+  scripts/install.sh scripts/uninstall.sh scripts/install-release.sh \
+  docs/configuration.md docs/operations.md docs/development.md
 printf '%s\n' "$archive"

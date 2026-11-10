@@ -38,11 +38,15 @@ jobs:
           go mod verify
           make check
           for script in scripts/*.sh; do sh -n "$script"; done
+          make build
           python3 -m unittest discover -s scripts/tests -v
       - name: Test AF_PACKET and kernel BPF on loopback
         shell: bash
         run: |
-          sudo env DNSMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture
+          sudo env DNSMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor -run Live
+      - name: Paced real-binary load test on isolated loopback
+        run: |
+          sudo unshare --net sh -c 'ip link set lo up; python3 scripts/loadtest.py --rate 1000 --seconds 3'
 
   build:
     name: Static Linux ${{ matrix.arch }}
@@ -79,6 +83,7 @@ jobs:
           make static VERSION="$VERSION"
           test "$(./bin/dnsmon version)" = "$VERSION"
           ./bin/dnsmon --help > /dev/null
+          DNSMON_BINARY="$PWD/bin/dnsmon" python3 -m unittest discover -s scripts/tests -v
           file bin/dnsmon
           case "$(file -b bin/dnsmon)" in
             *'statically linked'*|*'static-pie linked'*) ;;

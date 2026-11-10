@@ -4,6 +4,7 @@ package packet
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/binary"
 	"net/netip"
 	"sort"
@@ -14,12 +15,19 @@ type Limits struct {
 	Flows, TCPBytes, Fragments, FragmentBytes int
 	Timeout                                   time.Duration
 }
-type Counters struct{ Malformed, FragmentDiscarded, TCPDiscarded, Midstream uint64 }
+type Counters struct {
+	Malformed, MalformedDNS, FragmentDiscarded, TCPDiscarded, Midstream   uint64
+	TCPFlowLimit, TCPMemoryLimit, TCPTimeout, TCPFraming, TCPResetPartial uint64
+	FragmentLimit, FragmentOverlap, FragmentTimeout                       uint64
+}
 type Engine struct {
 	Port                uint16
 	Destination         netip.Addr
 	Limits              Limits
 	Counters            Counters
+	TCPIdleTimeout      time.Duration
+	closed              map[flowKey]*list.Element
+	closedOrder         *list.List
 	flows               map[flowKey]*flow
 	fragments           map[fragKey]*fragment
 	tcpBytes, fragBytes int
@@ -27,7 +35,7 @@ type Engine struct {
 }
 
 func New(port uint16, dst netip.Addr, l Limits, count func(netip.Addr, int64, int64)) *Engine {
-	return &Engine{Port: port, Destination: dst, Limits: l, Count: count, flows: make(map[flowKey]*flow), fragments: make(map[fragKey]*fragment)}
+	return &Engine{Port: port, Destination: dst, Limits: l, Count: count, flows: make(map[flowKey]*flow), fragments: make(map[fragKey]*fragment), closed: make(map[flowKey]*list.Element), closedOrder: list.New()}
 }
 func u16(b []byte) uint16   { return binary.BigEndian.Uint16(b) }
 func u32(b []byte) uint32   { return binary.BigEndian.Uint32(b) }
@@ -155,7 +163,11 @@ func (e *Engine) transport(src, dst netip.Addr, proto byte, b []byte, now time.T
 			return
 		}
 		if request(b[8:n]) {
-			e.Count(src.Unmap(), 1, now.Unix())
+			if validDNS(b[8:n]) {
+				e.Count(src.Unmap(), 1, now.Unix())
+			} else {
+				e.Counters.MalformedDNS++
+			}
 		}
 		return
 	}
@@ -202,6 +214,7 @@ func (e *Engine) reassemble(k fragKey, off int, more bool, b []byte, now time.Ti
 	if f == nil {
 		if len(e.fragments) >= e.Limits.Fragments {
 			e.Counters.FragmentDiscarded++
+			e.Counters.FragmentLimit++
 			return nil
 		}
 		f = &fragment{end: -1, seen: now}
@@ -214,12 +227,14 @@ func (e *Engine) reassemble(k fragKey, off int, more bool, b []byte, now time.Ti
 		}
 		if off < p.off+len(p.data) && end > p.off {
 			e.Counters.FragmentDiscarded++
+			e.Counters.FragmentOverlap++
 			e.dropFragment(k)
 			return nil
 		}
 	}
 	if (f.end >= 0 && (end > f.end || (!more && end != f.end))) || len(f.pieces) >= 256 || e.fragBytes+len(b) > e.Limits.FragmentBytes {
 		e.Counters.FragmentDiscarded++
+		e.Counters.FragmentLimit++
 		e.dropFragment(k)
 		return nil
 	}
@@ -268,7 +283,9 @@ type flow struct {
 	buf       []byte
 	pending   []segment
 	bytes     int
-	closed    bool
+	fin       bool
+	finSeq    uint32
+	progress  time.Time
 }
 
 func (e *Engine) dropFlow(k flowKey) {
@@ -279,14 +296,23 @@ func (e *Engine) dropFlow(k flowKey) {
 }
 func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time) {
 	f := e.flows[k]
+	if old := e.closed[k]; old != nil {
+		closed := old.Value.(closedFlow)
+		if flags&2 == 0 || closed.syn == seq {
+			return
+		}
+		delete(e.closed, k)
+		e.closedOrder.Remove(old)
+	}
 	if flags&2 != 0 { // SYN gives an unambiguous DNS-over-TCP framing boundary.
 		if f == nil || f.syn != seq {
 			e.dropFlow(k)
 			if len(e.flows) >= e.Limits.Flows {
 				e.Counters.TCPDiscarded++
+				e.Counters.TCPFlowLimit++
 				return
 			}
-			f = &flow{syn: seq, next: seq + 1, seen: now}
+			f = &flow{syn: seq, next: seq + 1, seen: now, progress: now}
 			e.flows[k] = f
 		}
 		seq++
@@ -298,8 +324,10 @@ func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time)
 		return
 	}
 	f.seen = now
-	if f.closed {
-		return
+	endSeq := seq + uint32(len(b))
+	if flags&1 != 0 {
+		f.fin = true
+		f.finSeq = endSeq
 	}
 	if len(b) > 0 {
 		delta := int32(seq - f.next)
@@ -322,10 +350,14 @@ func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time)
 			}
 			if delta > 1<<20 || f.bytes+len(b) > 131074 || e.tcpBytes+len(b) > e.Limits.TCPBytes || len(f.pending) >= 128 {
 				e.Counters.TCPDiscarded++
+				e.Counters.TCPMemoryLimit++
 				e.dropFlow(k)
 				return
 			}
 
+			if f.bytes == 0 {
+				f.progress = now
+			}
 			f.pending = append(f.pending, segment{seq, bytes.Clone(b)})
 			f.bytes += len(b)
 			e.tcpBytes += len(b)
@@ -345,11 +377,15 @@ func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time)
 				f.bytes -= trim
 				e.tcpBytes -= trim
 				f.buf = append(f.buf, p.data[trim:]...)
+				if len(p.data) > trim {
+					f.progress = now
+				}
 				f.next += uint32(len(p.data) - trim)
 				for len(f.buf) >= 2 {
 					n := int(u16(f.buf))
 					if n < 12 {
 						e.Counters.TCPDiscarded++
+						e.Counters.TCPFraming++
 						e.dropFlow(k)
 						return
 					}
@@ -357,7 +393,11 @@ func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time)
 						break
 					}
 					if request(f.buf[2 : n+2]) {
-						e.Count(k.src.Unmap(), 1, now.Unix())
+						if validDNS(f.buf[2 : n+2]) {
+							e.Count(k.src.Unmap(), 1, now.Unix())
+						} else {
+							e.Counters.MalformedDNS++
+						}
 					}
 					f.buf = f.buf[n+2:]
 					f.bytes -= n + 2
@@ -371,22 +411,49 @@ func (e *Engine) tcp(k flowKey, seq uint32, flags byte, b []byte, now time.Time)
 			}
 		}
 	}
-	// FIN may arrive ahead of a gap; keep the stream until idle expiry so late
-	// segments can finish it. RST explicitly abandons incomplete messages.
-	if flags&4 != 0 {
-		e.tcpBytes -= f.bytes
-		f.bytes = 0
-		f.buf = nil
-		f.pending = nil
-		f.closed = true
+	if flags&4 != 0 || (f.fin && int32(f.next-f.finSeq) >= 0) {
+		if f.bytes > 0 {
+			e.Counters.TCPDiscarded++
+			if flags&4 != 0 {
+				e.Counters.TCPResetPartial++
+			} else {
+				e.Counters.TCPFraming++
+			}
+		}
+		e.closeFlow(k, f, now)
 	}
 }
 
+type closedFlow struct {
+	key  flowKey
+	syn  uint32
+	seen time.Time
+}
+
+func (e *Engine) closeFlow(k flowKey, f *flow, now time.Time) {
+	syn := f.syn
+	e.dropFlow(k)
+	if len(e.closed) >= e.Limits.Flows {
+		old := e.closedOrder.Front()
+		if old != nil {
+			delete(e.closed, old.Value.(closedFlow).key)
+			e.closedOrder.Remove(old)
+		}
+	}
+	e.closed[k] = e.closedOrder.PushBack(closedFlow{k, syn, now})
+}
+
 func (e *Engine) Expire(now time.Time) {
+	idle := e.TCPIdleTimeout
+	if idle == 0 {
+		idle = e.Limits.Timeout
+	}
 	for k, f := range e.flows {
-		if now.Sub(f.seen) > e.Limits.Timeout {
+		timeout := f.bytes > 0 && now.Sub(f.progress) > e.Limits.Timeout
+		if timeout || now.Sub(f.seen) > idle {
 			if f.bytes > 0 {
 				e.Counters.TCPDiscarded++
+				e.Counters.TCPTimeout++
 			}
 			e.dropFlow(k)
 		}
@@ -394,10 +461,19 @@ func (e *Engine) Expire(now time.Time) {
 	for k, f := range e.fragments {
 		if now.Sub(f.seen) > e.Limits.Timeout {
 			e.Counters.FragmentDiscarded++
+			e.Counters.FragmentTimeout++
 			e.dropFragment(k)
 		}
 	}
+	for old := e.closedOrder.Front(); old != nil; old = e.closedOrder.Front() {
+		if now.Sub(old.Value.(closedFlow).seen) <= e.Limits.Timeout {
+			break
+		}
+		delete(e.closed, old.Value.(closedFlow).key)
+		e.closedOrder.Remove(old)
+	}
 }
+
 func (e *Engine) Memory() (flows, tcp, frags, frag int) {
 	return len(e.flows), e.tcpBytes, len(e.fragments), e.fragBytes
 }
