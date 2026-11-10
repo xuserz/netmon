@@ -53,18 +53,27 @@ class TerminalTests(unittest.TestCase):
         self.process = subprocess.Popen([str(BINARY), "--db", str(self.db), "top", "-n", "100", "--interval", "250ms", *args],
                                         stdin=self.slave, stdout=self.slave, stderr=self.slave,
                                         env=env, start_new_session=True)
-        self.until(wait_for)
+        self.until(wait_for, complete_frame=True)
 
-    def until(self, needle, timeout=4):
+    def until(self, needle, timeout=4, complete_frame=False):
+        def received():
+            position = self.data.find(needle)
+            if position < 0:
+                return False
+            # PTY reads can split anywhere in a row. Wait for the bottom border
+            # AFTER this marker; an earlier empty frame's border is insufficient.
+            return not complete_frame or "╯".encode() in self.data[position + len(needle):]
+
         deadline = time.monotonic() + timeout
-        while needle not in self.data and time.monotonic() < deadline:
+        while not received() and time.monotonic() < deadline:
             if select.select([self.master], [], [], .05)[0]:
                 self.data += os.read(self.master, 65536)
             # poll() can report exit before the terminal's buffered output has
             # been consumed. Stop only once no further PTY data are readable.
             elif self.process and self.process.poll() is not None:
                 break
-        self.assertIn(needle, self.data, self.data.decode(errors="replace"))
+        self.assertTrue(received(), f"Missing {'complete frame containing' if complete_frame else 'output'} {needle!r}:\n"
+                        + self.data.decode(errors="replace"))
 
     def stop(self):
         if self.process and self.process.poll() is None:
@@ -247,6 +256,24 @@ class TerminalTests(unittest.TestCase):
             self.data = b""
             os.write(self.master, b"s")
             self.until(b"sort " + kind)
+        self.quit_and_verify_restore()
+
+    def test_fragmented_network_row_is_complete_when_start_returns(self):
+        self.live_server(network=True)
+        config = Path(self.temp.name) / "network.yaml"
+        config.write_text(f"mode: network\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {Path(self.temp.name) / 'run'}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n")
+        real_read = os.read
+
+        def fragmented_read(fd, size):
+            # End each PTY read before the next byte: seeing the source IP can
+            # never imply that its risk/packet columns have arrived as well.
+            return real_read(fd, min(size, 1) if fd == self.master else size)
+
+        with mock.patch.object(os, "read", side_effect=fragmented_read):
+            self.start("--config", str(config), wait_for=b"192.0.2.77")
+        self.assertIn(b"85", self.data)
+        self.assertIn(b"777,777", self.data)
+        self.assertIn(b"\x1b[38;5;203m", self.data)
         self.quit_and_verify_restore()
 
     def test_exit_sequence_is_read_after_process_exit_and_fragmented_reads(self):

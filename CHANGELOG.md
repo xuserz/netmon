@@ -8,6 +8,10 @@ tags retroactively.
 
 ### Fixed
 
+- Wait for a complete terminal frame containing the requested IP before checking
+  trailing columns in PTY tests. Cover one-byte reads so a split risk column
+  cannot intermittently fail native static-release CI.
+
 - Continue service migration/update when `reset-failed` reports an unloaded unit;
   retain fatal start/health checks and rollback. Model inactive-unit collection
   in installer tests and show installation success only at the appropriate stage.
