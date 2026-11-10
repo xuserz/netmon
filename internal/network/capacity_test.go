@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/mattn/go-sqlite3"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 
 	"netmon/internal/observation"
 )
@@ -251,25 +252,6 @@ func TestCapacityRecoversLargeBatchAndCursorAfterSQLiteFull(t *testing.T) {
 	defer d.Close()
 	node := observation.ID()
 	base := time.Now().Add(-24*time.Hour).Unix() / 60 * 60
-	for start := 0; start < 512; start += 64 {
-		var items []observation.Sample
-		for i := start; i < start+64; i++ {
-			items = append(items, oldSample(node, base+int64(i/16)*60, fmt.Sprintf("198.51.%d.%d", i/256, i%256), 1))
-		}
-		if e = d.Merge(ctx, items, nil); e != nil {
-			t.Fatal(e)
-		}
-	}
-	var limit int64
-	if e = d.w.DB.QueryRow("PRAGMA page_count").Scan(&limit); e != nil {
-		t.Fatal(e)
-	}
-	// Leave a small maintenance reserve: WITHOUT ROWID index rebalance can
-	// allocate pages during DELETE. The incoming batch must still hit SQLITE_FULL.
-	limit += 8
-	if _, e = d.w.DB.Exec(fmt.Sprintf("PRAGMA max_page_count=%d", limit)); e != nil {
-		t.Fatal(e)
-	}
 	var incoming []observation.Sample
 	for i := 0; i < 128; i++ {
 		item := sample(node, 100)
@@ -280,15 +262,72 @@ func TestCapacityRecoversLargeBatchAndCursorAfterSQLiteFull(t *testing.T) {
 		}
 		incoming = append(incoming, item)
 	}
+
+	// The incoming transaction must fit in the hard limit *after* eviction.
+	// With only 512 old rows this is not always true: random observation IDs
+	// change B-tree page splits, making the fixture intermittently impossible.
+	// Measure the incoming batch in a fresh database, including its peer cursor.
+	probeConfig := configForTest(t)
+	probe, e := openDisk(probeConfig, true)
+	if e != nil {
+		t.Fatal(e)
+	}
 	peer := Peer{URL: "https://192.0.2.1:9845", Node: node, Epoch: observation.ID(), Cursor: 42}
+	if e = probe.Merge(ctx, incoming, &peer); e != nil {
+		probe.Close()
+		t.Fatal(e)
+	}
+	var requiredPages int64
+	if e = probe.w.DB.QueryRow("PRAGMA page_count").Scan(&requiredPages); e != nil {
+		probe.Close()
+		t.Fatal(e)
+	}
+	probe.Close()
+
+	// Build significantly more evictable history than the incoming batch needs.
+	// A small old database can be too small for recovery even after *all* old
+	// records are removed, because the new batch has much larger payloads.
+	// The earlier +32-page reserve hid SQLITE_FULL instead of fixing that.
+	var pages int64
+	for start := 0; start < 2048; start += 64 {
+		var items []observation.Sample
+		for i := start; i < start+64; i++ {
+			items = append(items, oldSample(node, base+int64(i/16)*60, fmt.Sprintf("198.51.%d.%d", i/256, i%256), 1))
+		}
+		if e = d.Merge(ctx, items, nil); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e = d.w.DB.QueryRow("PRAGMA page_count").Scan(&pages); e != nil {
+		t.Fatal(e)
+	}
+	if pages < requiredPages+96 {
+		t.Fatalf("insufficient evictable history: old=%d incoming-only=%d pages", pages, requiredPages)
+	}
+	// Only a few extra pages are available at first. The incoming 128-row
+	// transaction must fail; afterward Merge must evict older windows and
+	// reuse their pages without exceeding the same hard limit.
+	limit := pages + 8
+	if _, e = d.w.DB.Exec(fmt.Sprintf("PRAGMA max_page_count=%d", limit)); e != nil {
+		t.Fatal(e)
+	}
 	var changed bool
 	e = d.mergeOnce(ctx, incoming, &peer, 0, &changed)
 	var full sqlite3.Error
 	if !errors.As(e, &full) || full.Code != sqlite3.ErrFull || changed {
 		t.Fatalf("fixture did not trigger a rolled-back SQLITE_FULL batch: %v", e)
 	}
+	// A failed attempt must not acknowledge a replica cursor prematurely.
+	if saved, err := d.Peers(ctx); err != nil || len(saved) != 0 {
+		t.Fatalf("failed batch advanced replication cursor: %+v, %v", saved, err)
+	}
 	if e = d.Merge(ctx, incoming, &peer); e != nil {
-		t.Fatal("capacity recovery failed", e)
+		var current, free, maximum int64
+		_ = d.w.DB.QueryRow("PRAGMA page_count").Scan(&current)
+		_ = d.w.DB.QueryRow("PRAGMA freelist_count").Scan(&free)
+		_ = d.w.DB.QueryRow("PRAGMA max_page_count").Scan(&maximum)
+		t.Fatalf("capacity recovery failed: %v (page_count=%d freelist=%d max_page_count=%d required_fresh=%d)",
+			e, current, free, maximum, requiredPages)
 	}
 	saved, e := d.Peers(ctx)
 	if e != nil || len(saved) != 1 || saved[0].Cursor != 42 {
