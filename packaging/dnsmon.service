@@ -1,0 +1,36 @@
+[Unit]
+Description=Lightweight DNS client monitor
+Documentation=file:/usr/share/doc/dnsmon/README.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=dnsmon
+Group=dnsmon
+ExecStart=/usr/local/bin/dnsmon --config /etc/dnsmon/config.yaml run
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+StateDirectory=dnsmon
+StateDirectoryMode=0750
+UMask=0027
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_PACKET AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Host network namespace is required. Do not set PrivateNetwork=yes.
+
+[Install]
+WantedBy=multi-user.target

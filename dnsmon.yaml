@@ -1,0 +1,20 @@
+# Select ONE interface where client traffic enters the host, before Docker NAT.
+# Find it with: ip -br address; ip route get 1.1.1.1
+interface: eth0
+# Empty = all destination addresses observed on that interface.
+# For Docker publishing, use the public/host IP and published port here.
+destination_ip: ""
+port: 53
+database: /var/lib/dnsmon/stats.db
+flush_interval: 30s
+max_pending_ips: 10000
+# Hard cap on SQLite main database pages. Existing rows are never deleted.
+max_database_mb: 64
+# WAL checkpoint threshold; may overshoot by one bounded batch (see README).
+max_wal_mb: 16
+socket_buffer_mb: 2
+max_tcp_flows: 1024
+max_tcp_bytes: 8388608
+max_fragment_sets: 256
+max_fragment_bytes: 2097152
+reassembly_timeout: 2m

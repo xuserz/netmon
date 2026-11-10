@@ -1,0 +1,128 @@
+name: CI and releases
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Tests and validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+      - name: Build version
+        id: version
+        shell: bash
+        run: |
+          printf 'value=build-%s-%s-%s\n' "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+      - name: Verify modules and run checks
+        run: |
+          go mod verify
+          make check
+          for script in scripts/*.sh; do sh -n "$script"; done
+          python3 -m unittest discover -s scripts/tests -v
+      - name: Test AF_PACKET and kernel BPF on loopback
+        shell: bash
+        run: |
+          sudo env DNSMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture
+
+  build:
+    name: Static Linux ${{ matrix.arch }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+      - name: Install static C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools file
+      - name: Test and build on the native architecture
+        run: |
+          test "$(go env GOARCH)" = "$TARGET_ARCH"
+          go test ./...
+          make static VERSION="$VERSION"
+          test "$(./bin/dnsmon version)" = "$VERSION"
+          ./bin/dnsmon --help > /dev/null
+          file bin/dnsmon
+          case "$(file -b bin/dnsmon)" in
+            *'statically linked'*|*'static-pie linked'*) ;;
+            *) echo 'Expected a fully static executable' >&2; exit 1 ;;
+          esac
+      - name: Package installation bundle
+        run: ./scripts/package-release.sh "$TARGET_ARCH" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dnsmon-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish ready-to-install release
+    needs: [check, build]
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.check.outputs.version }}
+      TARGET_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dnsmon-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release notes
+        shell: bash
+        run: |
+          cp scripts/install-release.sh dist/install-release.sh
+          cd dist
+          sha256sum dnsmon_linux_amd64.tar.gz dnsmon_linux_arm64.tar.gz install-release.sh > SHA256SUMS
+          printf 'Commit: %s\n\nStatic Linux binaries for amd64 and arm64. Go is not required on the server.\n\nInstall or update as root:\n\n    curl -fsSL https://github.com/%s/releases/latest/download/install-release.sh | sh\n\nExisting configuration and statistics are preserved.\n' "$TARGET_COMMIT" "$GH_REPO" > "$RUNNER_TEMP/release-notes.md"
+      - name: Publish only after both bundles are ready
+        run: |
+          gh release create "$VERSION" dist/* --target "$TARGET_COMMIT" --latest --title "dnsmon $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
