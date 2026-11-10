@@ -1,0 +1,11 @@
+[Unit]
+Description=Check netmon cluster update offers
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=20s
+Unit=netmon-update.service
+
+[Install]
+WantedBy=timers.target

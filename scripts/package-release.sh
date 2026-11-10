@@ -19,5 +19,6 @@ tar -C "$project_dir" -czf "$archive" \
   bin/netmon netmon.yaml ip-labels.yaml packaging/netmon.service README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md CONTRIBUTING.md \
   scripts/install.sh scripts/migrate-dnsmon.sh scripts/uninstall.sh scripts/install-release.sh scripts/build-provider-catalog.py \
   data/providers/catalog.json.gz data/providers/manifest.json data/providers/LICENSE \
-  docs/providers.md docs/public-dns.md docs/configuration.md docs/operations.md docs/development.md docs/network.md docs/cluster.md
+  packaging/update-public-key packaging/update-policy.json packaging/netmon-update.service packaging/netmon-update.timer \
+  docs/updates.md docs/providers.md docs/public-dns.md docs/configuration.md docs/operations.md docs/development.md docs/network.md docs/cluster.md
 printf '%s\n' "$archive"

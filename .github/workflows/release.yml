@@ -121,6 +121,19 @@ jobs:
           pattern: netmon-linux-*
           path: dist
           merge-multiple: true
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+      - name: Sign automatic-update manifest
+        env:
+          NETMON_UPDATE_SIGNING_KEY: ${{ secrets.NETMON_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$NETMON_UPDATE_SIGNING_KEY" ]; then
+            echo '::warning::NETMON_UPDATE_SIGNING_KEY is absent; release remains manual-only.'
+          else
+            go run ./cmd/release-sign --dir dist --version "$VERSION"
+          fi
       - name: Checksums and release notes
         shell: bash
         run: |

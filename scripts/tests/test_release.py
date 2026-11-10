@@ -27,7 +27,7 @@ class ReleaseInstallTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{self.fake_bin}:{os.environ['PATH']}",
                         NETMON_REPOSITORY="test-owner/netmon", NETMON_VERSION="latest",
                         NETMON_TEST_MACHINE="x86_64", NETMON_TEST_OS="Linux",
-                        NETMON_TEST_UID="0", NETMON_TEST_ASSETS=str(self.assets),
+                        NETMON_INSTALL_LOCK=str(self.work / "install.lock"), NETMON_TEST_UID="0", NETMON_TEST_ASSETS=str(self.assets),
                         NETMON_TEST_MARKER=str(self.marker), NETMON_TEST_LOG=str(self.log))
         self.command("id", '#!/bin/sh\nprintf "%s\\n" "$NETMON_TEST_UID"\n')
         self.command("uname", '#!/bin/sh\ncase "$1" in -s) echo "$NETMON_TEST_OS";; -m) echo "$NETMON_TEST_MACHINE";; esac\n')
@@ -55,12 +55,18 @@ else:
         path.write_text(content)
         path.chmod(0o755)
 
-    def bundle(self, arch):
+    def bundle(self, arch, signed=False):
         with tarfile.open(self.assets / f"netmon_linux_{arch}.tar.gz", "w:gz") as archive:
             files = {
                 "bin/netmon": b"bundled executable fixture\n",
                 "scripts/install.sh": b'#!/bin/sh\nset -eu\n[ -f "$1" ]\nprintf "%s\\n" "$1" > "$NETMON_TEST_MARKER"\n',
             }
+            if signed:
+                # Signature mathematics are covered by the Go verifier tests;
+                # here exercise bootstrap argument pinning and metadata handoff.
+                files["bin/netmon"] = b'#!/bin/sh\nprintf "%s\\n" "$@" > "$NETMON_TEST_VERIFY_LOG"\n[ "${NETMON_TEST_VERIFY_OK:-1}" = 1 ]\n'
+                files["packaging/update-public-key"] = b"test public key\n"
+                files["scripts/install.sh"] = b'#!/bin/sh\nset -eu\nproject=$(dirname "$0")/..\nif [ -f "$project/update.json" ] && [ -f "$project/update.json.sig" ]; then echo signed; else echo manual; fi > "$NETMON_TEST_MARKER"\n'
             for name, content in files.items():
                 info = tarfile.TarInfo(name)
                 info.size = len(content)
@@ -87,7 +93,7 @@ else:
     def test_latest_resolves_once_and_pins_all_downloads(self):
         self.run_installer()
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(calls[0][-1].endswith("/releases/latest"))
         self.assertTrue(all("/download/build-12-1-abcdef12/" in call[-1] for call in calls[1:]))
         self.assertIn("netmon_linux_amd64.tar.gz", calls[1][-1])
@@ -95,7 +101,7 @@ else:
     def test_explicit_release_and_arm64(self):
         self.run_installer({"NETMON_VERSION": "build-9-1-12345678", "NETMON_TEST_MACHINE": "aarch64"})
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertIn("/build-9-1-12345678/netmon_linux_arm64.tar.gz", calls[0][-1])
 
     def test_checksum_failure_never_runs_install(self):
@@ -103,6 +109,22 @@ else:
             file.write(b"corruption")
         result = self.run_installer(success=False)
         self.assertIn("SHA-256 mismatch", result.stderr)
+
+    def test_signed_metadata_is_bound_to_requested_tag_and_selected_archive(self):
+        self.bundle("amd64", signed=True)
+        self.checksums()
+        (self.assets / "update.json").write_text("manifest fixture")
+        (self.assets / "update.json.sig").write_text("signature fixture")
+        log = self.work / "verify-args"
+        self.run_installer({"NETMON_TEST_VERIFY_LOG": str(log)})
+        self.assertEqual(self.marker.read_text().strip(), "signed")
+        args = log.read_text().splitlines()
+        self.assertEqual(args[:2], ["updates", "verify"])
+        self.assertEqual(args[args.index("--version") + 1], "build-12-1-abcdef12")
+        self.assertTrue(args[args.index("--archive") + 1].endswith("/netmon_linux_amd64.tar.gz"))
+        self.marker.unlink()
+        self.run_installer({"NETMON_TEST_VERIFY_LOG": str(log), "NETMON_TEST_VERIFY_OK": "0"})
+        self.assertEqual(self.marker.read_text().strip(), "manual")
 
     def test_duplicate_or_missing_checksum_is_rejected(self):
         manifest = self.assets / "SHA256SUMS"
@@ -167,7 +189,7 @@ class PackagingTests(unittest.TestCase):
             inputs = ["bin/netmon", "netmon.yaml", "ip-labels.yaml", "packaging/netmon.service", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md",
                       "scripts/install.sh", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
                       "docs/public-dns.md", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md",
-                      "docs/providers.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE"]
+                      "docs/providers.md", "docs/updates.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"]
             for name in inputs:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)

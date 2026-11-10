@@ -379,7 +379,8 @@ class TerminalTests(unittest.TestCase):
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         nodes = [{"node": f"{i:032x}", "name": f"edge-{i:03}", "role": "forward",
                   "direction": "IN", "address": f"192.0.2.{i}", "state": "ONLINE",
-                  "online": True, "last_seen": now} for i in range(1, 41)]
+                  "online": True, "last_seen": now, "version": "build-20-1-aaaaaaaa",
+                  "update": {"state": "waiting", "target": "build-21-1-bbbbbbbb"}} for i in range(1, 41)]
         self.live_server(network=True, network_nodes=nodes)
         config = Path(self.temp.name) / "nodes.yaml"
         config.write_text(f"mode: network\nlabels_file: \"\"\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {Path(self.temp.name) / 'run'}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n")
@@ -389,6 +390,8 @@ class TerminalTests(unittest.TestCase):
         os.write(self.master, b"n")
         self.until(b"NODE CONNECTIONS")
         self.until(b"edge-001")
+        self.until(b"build-20-1-aaaaaaaa")
+        self.until(b"update waiting")
         self.data = b""
         os.write(self.master, b"\x1b[F")
         self.until(b"edge-040")

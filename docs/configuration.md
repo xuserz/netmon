@@ -26,6 +26,10 @@ See [network monitoring](network.md) for complete full/forward configurations.
 | --- | --- | --- |
 | `labels_file` | `/etc/netmon/ip-labels.yaml` | Local server/whitelist descriptions; absolute path or empty to disable the manual catalog. Network CLI views reload edits automatically. |
 | `providers_file` | `/usr/share/netmon/providers.json.gz` | Offline provider range catalog; absolute path or empty to disable. Installed with releases, reloaded by network views; no API calls or automatic trust. See [provider labels](providers.md). |
+| `updates.automatic` | `false` | Opt in to signed automatic installation. Requires network cluster mode, a coordinator and an enabled update timer. |
+| `updates.propagate` | `true` | Relay verified release offers through cluster traffic, independently of local installation permission. |
+| `updates.coordinator` | `""` | One full node's advertised HTTPS URL, identical on participating hosts. Serializes automatic installs; see [updates](updates.md). |
+| `updates.public_key` | `/etc/netmon/update-public-key` | Root-owned Ed25519 public key. Never automatically replaced once installed. |
 | `mode` | `dns` | `network` for packet activity/rating, `dns` for legacy query accounting. |
 | `storage.mode` | `full` | `full` stores shared data; `forward` sends from RAM and opens no statistics DB. Forward requires network mode and at least one cluster peer. |
 | `storage.retention` | `0s` | `0s` disables age expiry; optionally 1h..720h. Oldest closed minute windows are removed at database capacity. Every member, including forward, must agree. |

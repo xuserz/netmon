@@ -5,6 +5,13 @@ mode: network
 labels_file: /etc/netmon/ip-labels.yaml
 # Offline provider attribution; empty disables. Updated with release data.
 providers_file: /usr/share/netmon/providers.json.gz
+# Automatic application is opt-in. All participating nodes use the same full
+# node as coordinator. Enable netmon-update.timer after configuring this block.
+updates:
+  automatic: false
+  propagate: true
+  coordinator: ""
+  public_key: /etc/netmon/update-public-key
 # Choose ONE interface before Docker NAT: ip route get 1.1.1.1
 interface: eth0
 destination_ip: ""

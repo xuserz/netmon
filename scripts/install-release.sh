@@ -4,6 +4,12 @@ set -eu
 fail() { printf 'netmon: %s\n' "$*" >&2; exit 1; }
 if [ "$(id -u)" -ne 0 ]; then fail 'Run as root, or pipe this script into sudo sh.'; fi
 if [ "$#" -ne 0 ]; then fail 'No arguments expected. Use NETMON_VERSION=TAG to select a release.'; fi
+if [ "${NETMON_INSTALL_LOCK_HELD:-0}" != 1 ]; then
+  command -v flock >/dev/null 2>&1 || fail 'Missing flock (util-linux).'
+  exec 9>"${NETMON_INSTALL_LOCK:-/run/netmon-install.lock}"
+  flock -n 9 || fail 'Another netmon installer is running.'
+  export NETMON_INSTALL_LOCK_HELD=1
+fi
 for tool in curl tar sha256sum awk mktemp uname; do
   command -v "$tool" >/dev/null 2>&1 || fail "Missing $tool. On Debian/Ubuntu: apt install curl ca-certificates tar coreutils"
 done
@@ -49,5 +55,20 @@ awk -v filename="$asset" '$2 == filename && NF == 2 { print; found++ } END { if 
 (cd "$work_dir" && sha256sum --check --status selected.sha256) || fail 'SHA-256 mismatch; nothing was installed. Retry the download.'
 mkdir "$work_dir/bundle"
 tar -xzf "$work_dir/$asset" -C "$work_dir/bundle" --no-same-owner
+# Signed metadata is optional for manual bootstrapping of older releases. Only
+# verified metadata matching these exact archive bytes may seed a cluster rollout.
+if curl --fail --silent --location --connect-timeout 15 --max-time 60 --proto '=https' --proto-redir '=https' \
+     --output "$work_dir/update.json" "$base_url/update.json" && \
+   curl --fail --silent --location --connect-timeout 15 --max-time 60 --proto '=https' --proto-redir '=https' \
+     --output "$work_dir/update.json.sig" "$base_url/update.json.sig"; then
+  verification_key=/etc/netmon/update-public-key
+  if [ ! -e "$verification_key" ]; then verification_key="$work_dir/bundle/packaging/update-public-key"; fi
+  if "$work_dir/bundle/bin/netmon" updates verify --manifest "$work_dir/update.json" \
+      --key "$verification_key" --version "$version" --archive "$work_dir/$asset"; then
+    cp "$work_dir/update.json" "$work_dir/update.json.sig" "$work_dir/bundle/"
+  else
+    printf '%s\n' 'Signed metadata did not match this release; automatic propagation disabled.' >&2
+  fi
+fi
 sh "$work_dir/bundle/scripts/install.sh" "$work_dir/bundle/bin/netmon"
 printf 'Installed release: %s\n' "$version"

@@ -14,6 +14,7 @@ import (
 
 	"netmon/internal/observation"
 	"netmon/internal/packet"
+	"netmon/internal/release"
 	"netmon/internal/store"
 )
 
@@ -42,26 +43,30 @@ type StorageUsage struct {
 }
 
 type NetworkNode struct {
-	Node         string    `json:"node"`
-	Name         string    `json:"name"`
-	Role         string    `json:"role"`
-	Address      string    `json:"address"`
-	Direction    string    `json:"direction"`
-	State        string    `json:"state"`
-	Online       bool      `json:"online"`
-	LastSeen     time.Time `json:"last_seen"`
-	LastAttempt  time.Time `json:"last_attempt"`
-	LastDelivery time.Time `json:"last_delivery"`
-	RTTMillis    float64   `json:"rtt_ms"`
-	Error        string    `json:"error,omitempty"`
-	SyncError    string    `json:"sync_error,omitempty"`
-	SyncKnown    bool      `json:"sync_known"`
-	Cursor       int64     `json:"cursor"`
-	Head         int64     `json:"head"`
-	LastSync     time.Time `json:"last_sync"`
+	Version      string         `json:"version,omitempty"`
+	Update       release.Status `json:"update,omitempty"`
+	Node         string         `json:"node"`
+	Name         string         `json:"name"`
+	Role         string         `json:"role"`
+	Address      string         `json:"address"`
+	Direction    string         `json:"direction"`
+	State        string         `json:"state"`
+	Online       bool           `json:"online"`
+	LastSeen     time.Time      `json:"last_seen"`
+	LastAttempt  time.Time      `json:"last_attempt"`
+	LastDelivery time.Time      `json:"last_delivery"`
+	RTTMillis    float64        `json:"rtt_ms"`
+	Error        string         `json:"error,omitempty"`
+	SyncError    string         `json:"sync_error,omitempty"`
+	SyncKnown    bool           `json:"sync_known"`
+	Cursor       int64          `json:"cursor"`
+	Head         int64          `json:"head"`
+	LastSync     time.Time      `json:"last_sync"`
 }
 
 type Health struct {
+	BuildVersion       string          `json:"build_version,omitempty"`
+	Update             release.Status  `json:"update,omitempty"`
 	NodeCacheEvictions uint64          `json:"node_cache_evictions"`
 	Storage            StorageUsage    `json:"storage"`
 	StorageFloor       int64           `json:"storage_floor"`
@@ -128,6 +133,7 @@ type Request struct {
 	Limit int    `json:"limit,omitempty"`
 }
 type Response struct {
+	UpdateOffer     *release.Offer     `json:"update_offer,omitempty"`
 	NetworkNodes    []NetworkNode      `json:"network_nodes,omitempty"`
 	Network         bool               `json:"network"`
 	NetworkIPs      []observation.IP   `json:"network_ips,omitempty"`

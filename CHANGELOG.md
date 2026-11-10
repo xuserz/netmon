@@ -59,6 +59,14 @@ tags retroactively.
 
 ### Added
 
+- Opt-in publisher-signed network-cluster updates: relay release offers over
+  authenticated v3 traffic, verify exact archive hashes and Ed25519 signatures,
+  stage downloads outside capture, and serialize automatic installs through a
+  selected full-node coordinator with restart cooldown. Add root update units,
+  version/status diagnostics, explicit retry after failed installation, local
+  installer locking, CI signing and compatibility declarations. Preserve opt-out,
+  manual-only unsigned releases and pinned host trust keys.
+
 - Offline provider attribution from a pinned CC0 IP-range snapshot: 67 provider
   lists, 45,643 merged provider/CIDR pairs. Show provider/category/range provenance
   in network views and CSV without API calls, capture-path work or SQLite rows.

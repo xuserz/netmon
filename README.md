@@ -18,6 +18,7 @@ multiple servers with encrypted peer-to-peer synchronization.
 - Keep history until the database fills, then remove oldest minute windows first.
 - Live database/WAL size, capacity, filesystem free space and write headroom.
 - Offline cloud/CDN/bot/provider labels, separate from your explicit TRUSTED whitelist.
+- Opt-in signed cluster updates with a coordinator and a separate privileged installer.
 - Passive PACKET_MMAP capture before Docker NAT; no firewall changes or automatic blocking.
 - Static **amd64/arm64** releases with SQLite included; Go is not required on the server.
 - Legacy DNS query accounting remains available through `mode: dns`.
@@ -101,6 +102,7 @@ netmon top --once                   # Plain text snapshot
 netmon top --no-color
 netmon providers                    # Local provider catalog date/revision
 netmon providers lookup 104.16.1.2  # Offline range attribution
+netmon updates status               # Signed rollout status and configuration
 netmon show 192.0.2.10              # Counters, score, reasons
 netmon stats                       # Shared saved window on full nodes
 netmon stats --local               # Bounded RAM view of this process
@@ -275,6 +277,7 @@ publish static amd64 and arm64 release bundles.
 - [Network mode, suspicion rating, and storage roles](docs/network.md)
 - [Configuration and capture scope](docs/configuration.md)
 - [Offline provider labels and catalog updates](docs/providers.md)
+- [Signed cluster updates and first-time setup](docs/updates.md)
 - [Legacy DNS peer-to-peer clustering](docs/cluster.md)
 - [Operations and troubleshooting](docs/operations.md)
 - [Development and testing](docs/development.md)

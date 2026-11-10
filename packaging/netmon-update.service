@@ -1,0 +1,23 @@
+[Unit]
+Description=Apply a publisher-signed netmon cluster update
+Wants=network-online.target
+After=network-online.target netmon.service
+ConditionPathExists=/etc/netmon/config.yaml
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/netmon --config /etc/netmon/config.yaml updates apply
+StateDirectory=netmon-updater
+StateDirectoryMode=0755
+UMask=0022
+TimeoutStartSec=12min
+TimeoutStopSec=35s
+KillMode=control-group
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+

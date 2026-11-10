@@ -181,6 +181,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		}
 		h := r.Health
 		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nNodes online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
+		fmt.Fprintf(out, "Build: %s\nUpdate: %s; target: %s\n", h.BuildVersion, h.Update.State, h.Update.Target)
 		printNetworkStorage(out, h)
 
 		if h.StorageMode == "full" {

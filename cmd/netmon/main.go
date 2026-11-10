@@ -44,6 +44,7 @@ Usage: netmon [--config /etc/netmon/config.yaml] [--db /path/stats.db] COMMAND
   status               Service state and live capture diagnostics
   check [--startup]    Read-only configuration and runtime checks
   migrate-config       Convert an old dnsmon config without changing data paths
+  updates              Cluster update status and privileged signed-release installer
   version              Print version
 
 Read commands never start a capture. Global flags may also follow COMMAND.
@@ -97,6 +98,17 @@ func run(args []string, out, errOut io.Writer) error {
 		return nil
 	}
 
+	if command == "updates" && len(rest) > 0 {
+		if rest[0] == "keygen" {
+			return updateKeygen(rest[1:], out, errOut)
+		}
+		if rest[0] == "verify" {
+			return updateVerify(rest[1:], out, errOut)
+		}
+		if rest[0] == "--help" || rest[0] == "-h" || rest[0] == "help" {
+			return updatesCommand(rest, config.Default(), path, out, errOut)
+		}
+	}
 	if command == "migrate-config" {
 		return migrateConfig(rest, out, errOut)
 	}
@@ -105,7 +117,7 @@ func run(args []string, out, errOut io.Writer) error {
 		return clusterKeygen(rest[1:], out, errOut)
 	}
 	switch command {
-	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers", "compact", "providers":
+	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers", "compact", "providers", "updates":
 	default:
 		return fmt.Errorf("unknown command %q; use netmon help", command)
 	}
@@ -134,6 +146,13 @@ func run(args []string, out, errOut io.Writer) error {
 			return errors.New("--db does not apply to providers; use --config")
 		}
 		return providerCommand(rest, c, out)
+	}
+	c.BuildVersion = version
+	if command == "updates" {
+		if dbPath != "" {
+			return errors.New("--db does not apply to updates")
+		}
+		return updatesCommand(rest, c, path, out, errOut)
 	}
 	configuredDatabase := c.Database
 	if dbPath != "" {

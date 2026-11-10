@@ -39,3 +39,29 @@ func TestClusterConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestAutomaticUpdatesRequireExplicitNetworkCoordinator(t *testing.T) {
+	c := Default()
+	if c.Updates.Automatic || !c.Updates.Propagate {
+		t.Fatal(c.Updates)
+	}
+	c.Updates.Automatic = true
+	if e := c.Validate(); e == nil {
+		t.Fatal("legacy mode allowed automatic updates")
+	}
+	c.Mode = "network"
+	c.Cluster.Enabled = true
+	c.Cluster.Advertise = "https://192.0.2.1:9845"
+	c.Cluster.KeyFile = "/etc/netmon/cluster.key"
+	if e := c.Validate(); e == nil {
+		t.Fatal("missing coordinator accepted")
+	}
+	c.Updates.Coordinator = "https://192.0.2.1:9845"
+	if e := c.Validate(); e != nil {
+		t.Fatal(e)
+	}
+	c.Updates.Coordinator = "http://192.0.2.1:9845"
+	if e := c.Validate(); e == nil {
+		t.Fatal("insecure coordinator accepted")
+	}
+}

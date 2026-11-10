@@ -339,6 +339,8 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 	r.healthMu.Lock()
 	health := r.health
 	r.healthMu.Unlock()
+	health.BuildVersion = r.cfg.BuildVersion
+	health.Update = r.transport.updateStatus()
 	count, bytes := r.queue.size()
 	health.PendingIPs = count
 	health.QueueBytes = bytes
@@ -359,7 +361,7 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 			health.ClusterLastSync = time.Unix(p.Success, 0)
 		}
 	}
-	return live.Response{Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
+	return live.Response{UpdateOffer: r.transport.updates.snapshot(), Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
 }
 func (r *Runtime) close() {
 	if r.cancel != nil {

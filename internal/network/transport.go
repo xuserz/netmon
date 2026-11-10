@@ -22,12 +22,17 @@ import (
 	"netmon/internal/cluster"
 	"netmon/internal/config"
 	"netmon/internal/observation"
+	"netmon/internal/release"
 )
 
 const wireVersion = 3
 const maxWire = 2 << 20
 
 type message struct {
+	Build             string             `json:"build,omitempty"`
+	Update            *release.Offer     `json:"update,omitempty"`
+	UpdateStatus      release.Status     `json:"update_status,omitempty"`
+	UpdateLease       *UpdateLease       `json:"update_lease,omitempty"`
 	Heartbeat         bool               `json:"heartbeat,omitempty"`
 	ContactTTLSeconds int64              `json:"contact_ttl_seconds,omitempty"`
 	Version           int                `json:"version"`
@@ -43,6 +48,7 @@ type message struct {
 	Page
 }
 type transport struct {
+	updates       *updateControl
 	presence      *presence
 	cfg           config.Config
 	node, name    string
@@ -68,7 +74,7 @@ func forwardIdentity(c config.Config, key []byte) string {
 	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 func newTransport(c config.Config, node, name string, d *disk) (*transport, error) {
-	t := &transport{presence: newPresence(), cfg: c, node: node, name: name, store: d, peers: map[string]Peer{}, slots: make(chan struct{}, 4)}
+	t := &transport{updates: newUpdateControl(c), presence: newPresence(), cfg: c, node: node, name: name, store: d, peers: map[string]Peer{}, slots: make(chan struct{}, 4)}
 	if !c.Cluster.Enabled {
 		return t, nil
 	}
@@ -145,6 +151,11 @@ func (t *transport) list() []Peer {
 func (t *transport) remember(p Peer) { t.mu.Lock(); t.peers[p.URL] = p; t.mu.Unlock() }
 func (t *transport) envelope() message {
 	m := message{Version: wireVersion, Mode: "network", PolicyVersion: observation.PolicyVersion, Policy: Policy(t.cfg), Retention: int64(t.cfg.Storage.Retention / time.Second), Node: t.node, Name: t.name, Role: t.cfg.Storage.Mode, ContactTTLSeconds: int64(t.contactTTL() / time.Second)}
+	m.Build = t.cfg.BuildVersion
+	m.UpdateStatus = t.updateStatus()
+	if t.cfg.Updates.Propagate {
+		m.Update = t.updates.snapshot()
+	}
 	if t.cfg.Storage.Mode == "full" {
 		m.Advertise, _ = config.PeerURL(t.cfg.Cluster.Advertise)
 	}
@@ -159,6 +170,18 @@ func (t *transport) envelope() message {
 	return m
 }
 func (t *transport) validate(m message) error {
+	if len(m.UpdateStatus.Blocked) > 128 || observation.InvalidName(m.UpdateStatus.Blocked) || len(m.UpdateStatus.Version) > 128 || len(m.UpdateStatus.Target) > 128 || len(m.UpdateStatus.State) > 32 || len(m.UpdateStatus.Error) > 256 || observation.InvalidName(m.UpdateStatus.Version+m.UpdateStatus.Target+m.UpdateStatus.State+m.UpdateStatus.Error) {
+		return errors.New("invalid update status")
+	}
+	if len(m.Build) > 128 || observation.InvalidName(m.Build) || m.Update != nil && (len(m.Update.Manifest) > release.MaxManifest || len(m.Update.Signature) > 128) {
+		return errors.New("invalid peer update metadata")
+	}
+	if m.UpdateLease != nil {
+		l := m.UpdateLease
+		if (l.Action != "acquire" && l.Action != "release") || !observation.ValidID(l.Token) || !release.ValidVersion(l.Target) || len(l.Error) > 256 {
+			return errors.New("invalid update lease")
+		}
+	}
 	if m.Version != wireVersion || m.Mode != "network" || m.PolicyVersion != observation.PolicyVersion || m.Policy != Policy(t.cfg) || m.Retention != int64(t.cfg.Storage.Retention/time.Second) {
 		return errors.New("network mode, rating policy, or retention differs between nodes")
 	}
@@ -211,6 +234,7 @@ func (t *transport) request(ctx context.Context, p Peer, path string, m message)
 	for _, url := range response.Peers {
 		t.discover(url)
 	}
+	t.updates.receive(response.Update)
 	return response, nil
 }
 func (t *transport) send(ctx context.Context, items []pending) error {
@@ -301,7 +325,7 @@ func (t *transport) applyPage(ctx context.Context, previous Peer, reply message)
 	return next, nil
 }
 func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" || (r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v3/network/exchange") {
+	if r.Method != "POST" || (r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v3/network/exchange" && r.URL.Path != "/v3/network/update-lease") {
 		http.NotFound(w, r)
 		return
 	}
@@ -327,7 +351,7 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "peer identity mismatch", 403)
 		return
 	}
-	if m.Node == t.node {
+	if m.Node == t.node && r.URL.Path != "/v3/network/update-lease" {
 		http.Error(w, "duplicate node identity or self connection", 409)
 		return
 	}
@@ -335,11 +359,27 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "heartbeat must be an empty ingest", 400)
 		return
 	}
-	t.presence.recordIncoming(m, r.RemoteAddr, time.Now(), t.contactTTL())
+	if r.URL.Path != "/v3/network/update-lease" {
+		t.presence.recordIncoming(m, r.RemoteAddr, time.Now(), t.contactTTL())
+	}
+	t.updates.receive(m.Update)
 	if m.Role == "full" {
 		t.discover(m.Advertise)
 	}
 	reply := t.envelope()
+	if r.URL.Path == "/v3/network/update-lease" {
+		coordinator, _ := config.PeerURL(t.cfg.Updates.Coordinator)
+		self, _ := config.PeerURL(t.cfg.Cluster.Advertise)
+		if coordinator == "" || coordinator != self || m.UpdateLease == nil || len(m.Samples) != 0 {
+			http.Error(w, "this node is not the configured update coordinator", 409)
+			return
+		}
+		lease := t.updates.lease(m.Node, *m.UpdateLease, time.Now())
+		reply.UpdateLease = &lease
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(reply)
+		return
+	}
 	if m.Heartbeat {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(reply)

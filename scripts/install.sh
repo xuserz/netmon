@@ -4,6 +4,12 @@ if [ "$(id -u)" -ne 0 ]; then
   echo 'Run as root: sudo ./scripts/install.sh [--release | path/to/netmon]' >&2
   exit 1
 fi
+if [ "${NETMON_INSTALL_LOCK_HELD:-0}" != 1 ]; then
+  command -v flock >/dev/null 2>&1 || { echo 'Missing flock (util-linux).' >&2; exit 1; }
+  exec 9>"${NETMON_INSTALL_LOCK:-/run/netmon-install.lock}"
+  flock -n 9 || { echo 'Another netmon installer is running.' >&2; exit 1; }
+  export NETMON_INSTALL_LOCK_HELD=1
+fi
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ "$#" -gt 1 ]; then echo 'Usage: install.sh [--release | path/to/netmon]' >&2; exit 1; fi
 if [ "${1:-}" = --release ]; then exec sh "$project_dir/scripts/install-release.sh"; fi
@@ -55,6 +61,9 @@ fi
 # Preserve the user's address book; labels never affect database ownership.
 if [ ! -e /etc/netmon/ip-labels.yaml ]; then
   install -o root -g "$service_user" -m 0640 "$project_dir/ip-labels.yaml" /etc/netmon/ip-labels.yaml
+fi
+if [ ! -e /etc/netmon/update-public-key ]; then
+  install -o root -g "$service_user" -m 0644 "$project_dir/packaging/update-public-key" /etc/netmon/update-public-key
 fi
 # Perform read-only preflight before disturbing a running installation.
 preflight() {
@@ -127,6 +136,19 @@ install -m 0644 "$unit_temp" /etc/systemd/system/netmon.service
 rm -f -- "$unit_temp"
 install -d -m 0755 /usr/share/doc/netmon
 install -d -m 0755 /usr/share/netmon
+for update_unit in netmon-update.service netmon-update.timer; do
+  install -m 0644 "$project_dir/packaging/$update_unit" "/etc/systemd/system/$update_unit"
+done
+if [ -f "$project_dir/update.json" ] && [ -f "$project_dir/update.json.sig" ] && \
+   "$binary" updates verify --manifest "$project_dir/update.json" --key /etc/netmon/update-public-key --version "$("$binary" version)"; then
+  for metadata in update.json update.json.sig; do
+    metadata_temp=$(mktemp /usr/share/netmon/.update.XXXXXX)
+    install -m 0644 "$project_dir/$metadata" "$metadata_temp"
+    mv -f -- "$metadata_temp" "/usr/share/netmon/$metadata"
+  done
+else
+  rm -f /usr/share/netmon/update.json /usr/share/netmon/update.json.sig
+fi
 catalog_temp=$(mktemp /usr/share/netmon/.providers.XXXXXX)
 install -m 0644 "$project_dir/data/providers/catalog.json.gz" "$catalog_temp"
 mv -f -- "$catalog_temp" /usr/share/netmon/providers.json.gz
@@ -164,14 +186,16 @@ if [ "$was_active" -eq 1 ]; then
   while [ "$attempts" -lt 60 ]; do
     if systemctl is-active --quiet netmon.service && /usr/local/bin/netmon --config /etc/netmon/config.yaml status >/dev/null 2>&1; then
       healthy=$((healthy + 1))
-      if [ "$healthy" -ge 2 ]; then break; fi
+      required_healthy=2
+      if [ "${NETMON_AUTOMATIC_UPDATE:-0}" = 1 ]; then required_healthy=10; fi
+      if [ "$healthy" -ge "$required_healthy" ]; then break; fi
     else
       healthy=0
     fi
     attempts=$((attempts + 1))
     sleep 1
   done
-  if [ "$healthy" -lt 2 ]; then
+  if [ "$healthy" -lt "${required_healthy:-2}" ]; then
     echo 'The new monitor did not become healthy; rolling back.' >&2
     exit 1
   fi

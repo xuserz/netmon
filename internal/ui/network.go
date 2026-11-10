@@ -146,6 +146,15 @@ func renderNetwork(s State, width, height int) string {
 				box(format(node.State, node.Role, name, ago(node.LastSeen), rtt, pending), color)
 			} else {
 				detail := " " + node.Direction + " · " + node.Address
+				if node.Version != "" {
+					detail += " · " + node.Version
+				}
+				if node.Update.State != "" {
+					detail += " · update " + node.Update.State
+				}
+				if node.Update.Target != "" {
+					detail += " → " + node.Update.Target
+				}
 				if node.SyncError != "" {
 					detail += " · SYNC: " + node.SyncError
 				} else if node.Error != "" {

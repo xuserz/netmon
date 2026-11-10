@@ -60,6 +60,12 @@ func printNetworkNodes(w io.Writer, r live.Response, jsonOutput bool) error {
 		}
 		fmt.Fprintf(w, "%-9s %-7s %-5s %-24s %-10s %-10s %-10s %s\n", n.State, n.Role, n.Direction, name, nodeAge(n.LastSeen), rtt, pending, n.Address)
 		fmt.Fprintf(w, "  ID: %s · contact: %s · delivery: %s · sync: %s\n", n.Node, timestamp(n.LastSeen), timestamp(n.LastDelivery), timestamp(n.LastSync))
+		if n.Version != "" {
+			fmt.Fprintf(w, "  Build: %s · update: %s · target: %s\n", n.Version, n.Update.State, n.Update.Target)
+		}
+		if n.Update.Error != "" {
+			fmt.Fprintln(w, "  Update:", n.Update.Error)
+		}
 		if n.SyncKnown {
 			fmt.Fprintf(w, "  Cursor: %d / %d\n", n.Cursor, n.Head)
 		}

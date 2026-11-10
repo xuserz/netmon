@@ -19,7 +19,7 @@ class InstallerTests(unittest.TestCase):
         self.state = self.root / "state"
         self.state.write_text("active")
         self.env = dict(os.environ, PATH=f"{self.fake_bin}:{os.environ['PATH']}",
-                        TEST_ROOT=str(self.root), TEST_STATE=str(self.state))
+                        TEST_ROOT=str(self.root), TEST_STATE=str(self.state), NETMON_INSTALL_LOCK=str(self.root / "install.lock"))
         self.command("id", "#!/bin/sh\necho 0\n")
         self.command("getent", "#!/bin/sh\nexit 0\n")
         # Filesystem permissions are exercised by install itself; fake only the
@@ -66,7 +66,7 @@ esac
         project = self.root / "checkout"
         (project / "scripts").mkdir(parents=True)
         (project / "packaging").mkdir()
-        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md", "docs/providers.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE"):
+        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md", "docs/providers.md", "docs/updates.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE", "packaging/update-public-key", "packaging/update-policy.json", "packaging/netmon-update.service", "packaging/netmon-update.timer"):
             (project / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, project / name)
         content = (ROOT / "scripts/install.sh").read_text()
@@ -122,6 +122,16 @@ esac
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(labels.read_bytes(), before)
         self.assertEqual(catalog.read_bytes(), (ROOT / "data/providers/catalog.json.gz").read_bytes())
+
+    def test_update_units_are_installed_without_enabling_automatic_application(self):
+        key = self.root / "etc/netmon/update-public-key"
+        key.write_text("existing administrator trust key\n")
+        result = self.run_install("new-good")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(key.read_text(), "existing administrator trust key\n")
+        for unit in ("netmon-update.service", "netmon-update.timer"):
+            self.assertEqual((self.root / "etc/systemd/system" / unit).read_bytes(), (ROOT / "packaging" / unit).read_bytes())
+        self.assertFalse((self.root / "var/lib/netmon-updater").exists())
 
     def test_failed_new_service_rolls_back_binary_and_unit(self):
         result = self.run_install("new-bad")

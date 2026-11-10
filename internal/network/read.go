@@ -14,6 +14,7 @@ import (
 	"netmon/internal/cluster"
 	"netmon/internal/config"
 	"netmon/internal/observation"
+	"netmon/internal/release"
 )
 
 func Read(ctx context.Context, c config.Config, sort string, n int) ([]observation.IP, observation.Totals, error) {
@@ -60,7 +61,7 @@ func Export(ctx context.Context, c config.Config, path string) error {
 	if e != nil {
 		return e
 	}
-	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, c.LabelsFile, c.ProvidersFile, RuntimeBase(c)} {
+	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, c.LabelsFile, c.ProvidersFile, c.Updates.PublicKey, InstalledOfferPath, InstalledOfferPath + ".sig", UpdateStatePath, RuntimeBase(c)} {
 		if base == "" {
 			continue
 		}
@@ -138,6 +139,11 @@ func Export(ctx context.Context, c config.Config, path string) error {
 func Check(c config.Config) error {
 	if e := c.Validate(); e != nil {
 		return e
+	}
+	if c.Updates.Automatic {
+		if _, e := release.PublicKey(c.Updates.PublicKey); e != nil {
+			return fmt.Errorf("update verification key: %w", e)
+		}
 	}
 	if c.Cluster.Enabled {
 		if _, e := cluster.ReadKey(c.Cluster.KeyFile); e != nil {

@@ -53,6 +53,8 @@ func (p *presence) recordOutgoing(url string, reply message, at time.Time, elaps
 		c.node.Node = reply.Node
 		c.node.Name = reply.Name
 		c.node.Role = reply.Role
+		c.node.Version = reply.Build
+		c.node.Update = reply.UpdateStatus
 		c.node.LastSeen = at
 		c.node.RTTMillis = float64(elapsed) / float64(time.Millisecond)
 		c.node.Error = ""
@@ -86,6 +88,8 @@ func (p *presence) recordIncoming(m message, remote string, now time.Time, fallb
 	c.node.Node = m.Node
 	c.node.Name = m.Name
 	c.node.Role = m.Role
+	c.node.Version = m.Build
+	c.node.Update = m.UpdateStatus
 	c.node.Address = ip
 	c.node.Direction = "IN"
 	c.node.LastSeen = now
@@ -196,6 +200,8 @@ func (p *presence) snapshot(peers []Peer, now time.Time, ttl time.Duration, live
 			out.node.Direction = "BOTH"
 			if in.node.LastSeen.After(out.node.LastSeen) {
 				out.node.LastSeen = in.node.LastSeen
+				out.node.Version = in.node.Version
+				out.node.Update = in.node.Update
 			}
 			if out.node.Name == "" {
 				out.node.Name = in.node.Name
