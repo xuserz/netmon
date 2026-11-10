@@ -14,11 +14,11 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARY = Path(os.environ.get("DNSMON_BINARY", ROOT / "bin/dnsmon"))
+BINARY = Path(os.environ.get("NETMON_BINARY", ROOT / "bin/netmon"))
 
 
-@unittest.skipUnless(os.environ.get("DNSMON_INTEGRATION") == "1" and BINARY.is_file(),
-                     "enable DNSMON_INTEGRATION=1 in an isolated network namespace")
+@unittest.skipUnless(os.environ.get("NETMON_INTEGRATION") == "1" and BINARY.is_file(),
+                     "enable NETMON_INTEGRATION=1 in an isolated network namespace")
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         try:

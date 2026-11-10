@@ -1,0 +1,233 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/netip"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/network"
+	"netmon/internal/observation"
+	"netmon/internal/ui"
+)
+
+func networkFetch(ctx context.Context, c config.Config, kind string, n int, local bool) (live.Response, error) {
+	if r, e := live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "top", Sort: kind, Limit: n, Local: local}); e == nil && r.Network {
+		return r, nil
+	}
+	if c.Storage.Mode == "forward" || local {
+		return live.Response{}, errors.New("forward/local RAM statistics require a running network monitor; inspect a storage node for history")
+	}
+	rows, totals, e := network.Read(ctx, c, kind, n)
+	if e != nil {
+		return live.Response{}, e
+	}
+	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode}}, nil
+}
+func printNetworkRows(w io.Writer, rows []observation.IP) {
+	fmt.Fprintf(w, "%-39s %5s %16s %16s %12s\n", "SOURCE IP", "RISK", "PACKETS", "IP BYTES", "TCP SYN")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-39s %5d %16s %16s %12s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)))
+	}
+}
+func printNetworkTotals(w io.Writer, r live.Response) {
+	scope := "Saved network window"
+	if r.Partial {
+		scope = "Local RAM sample (bounded; totals since process start)"
+	}
+	fmt.Fprintf(w, "%s\nObserved IPs: %s\nPackets: %s\nIP bytes: %s\nTCP SYN packets: %s\nUDP packets: %s\n", scope, commas(fmt.Sprint(r.NetworkTotals.IPs)), commas(fmt.Sprint(r.NetworkTotals.Packets)), commas(fmt.Sprint(r.NetworkTotals.Bytes)), commas(fmt.Sprint(r.NetworkTotals.SYN)), commas(fmt.Sprint(r.NetworkTotals.UDP)))
+}
+func networkCommand(command string, args []string, c config.Config, out, errOut io.Writer) error {
+	if command == "run" {
+		if len(args) != 0 {
+			return errors.New("run takes no arguments")
+		}
+		syscall.Umask(0027)
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		return network.Run(ctx, c)
+	}
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	local := fs.Bool("local", false, "show bounded current-process RAM counters")
+	n := fs.Int("n", 20, "top rows (maximum 1000)")
+	sort := fs.String("sort", "score", "rank by score, total, bytes, or syn")
+	once := fs.Bool("once", false, "print once")
+	watch := fs.Bool("watch", false, "require interactive top")
+	noColor := fs.Bool("no-color", false, "disable colors")
+	interval := fs.Duration("interval", 2*time.Second, "refresh interval")
+	csv := fs.String("csv", "", "CSV destination")
+	timeout := fs.Duration("timeout", 5*time.Minute, "export deadline")
+	snapshotDirectory := fs.String("snapshot-dir", ".", "filesystem for an isolated bulk-list snapshot")
+	startup := fs.Bool("startup", false, "startup checks")
+	if e := fs.Parse(args); e != nil {
+		if errors.Is(e, flag.ErrHelp) {
+			return nil
+		}
+		return e
+	}
+	_ = startup
+	if *n < 1 || *n > 1000 {
+		return errors.New("network -n must be 1..1000")
+	}
+	if *sort != "score" && *sort != "total" && *sort != "bytes" && *sort != "syn" {
+		return errors.New("network --sort must be score, total, bytes, or syn")
+	}
+	if command != "show" && fs.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if command == "check" {
+		if e := network.Check(c); e != nil {
+			return e
+		}
+		if c.Network.Capture {
+			iface, e := net.InterfaceByName(c.Interface)
+			if e != nil {
+				return e
+			}
+			if iface.Flags&net.FlagUp == 0 {
+				return errors.New("capture interface is down")
+			}
+		}
+		fmt.Fprintf(out, "[OK] network mode; storage=%s; capture=%t\n", c.Storage.Mode, c.Network.Capture)
+		if c.Storage.Mode == "forward" {
+			fmt.Fprintln(out, "[OK] statistics are RAM-only; no local SQLite database will be opened")
+		}
+		return nil
+	}
+	if command == "export" {
+		if *csv == "" {
+			return errors.New("export requires --csv FILE")
+		}
+		if c.Storage.Mode == "forward" || *local {
+			return errors.New("export history on a full storage node; RAM samples are available through top/show")
+		}
+		if *timeout < time.Second || *timeout > 24*time.Hour {
+			return errors.New("--timeout must be 1s..24h")
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		ctx, stop := context.WithTimeout(ctx, *timeout)
+		defer stop()
+		if e := network.Export(ctx, c, *csv); e != nil {
+			return e
+		}
+		fmt.Fprintln(out, "Exported network statistics:", *csv)
+		return nil
+	}
+	if command == "list" && c.Storage.Mode == "full" && !*local {
+		if *timeout < time.Second || *timeout > 24*time.Hour {
+			return errors.New("--timeout must be 1s..24h")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, *timeout)
+		defer cancel()
+		printNetworkRows(out, nil)
+		totals, e := network.List(ctx, c, *snapshotDirectory, *sort, func(row observation.IP) error {
+			_, e := fmt.Fprintf(out, "%-39s %5d %16s %16s %12s\n", row.IP, row.Score, commas(fmt.Sprint(row.Packets)), commas(fmt.Sprint(row.Bytes)), commas(fmt.Sprint(row.SYN)))
+			return e
+		})
+		if e != nil {
+			return e
+		}
+		printNetworkTotals(out, live.Response{Network: true, NetworkTotals: totals})
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if command == "status" {
+		r, e := live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "health"})
+		if e != nil {
+			return fmt.Errorf("network monitor unavailable: %w", e)
+		}
+		h := r.Health
+		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nPeers online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
+		if h.FlushError != "" {
+			return errors.New(h.FlushError)
+		}
+		return nil
+	}
+	if command == "nodes" {
+		if c.Storage.Mode == "forward" {
+			return errors.New("forwarding peer status is available in netmon status; this node has no peer database")
+		}
+		peers, e := network.ReadPeers(ctx, c)
+		if e != nil {
+			return e
+		}
+		for _, p := range peers {
+			fmt.Fprintf(out, "%s  %s  %s  last=%s  %s\n", p.URL, p.Name, p.Node, timestamp(time.Unix(p.Success, 0)), p.Error)
+		}
+		return nil
+	}
+	if command == "show" {
+		if fs.NArg() != 1 {
+			return errors.New("show requires exactly one IP")
+		}
+		addr, e := netip.ParseAddr(fs.Arg(0))
+		if e != nil || addr.Zone() != "" {
+			return errors.New("invalid IP address")
+		}
+		var row observation.IP
+		if c.Storage.Mode == "full" && !*local {
+			row, e = network.ReadIP(ctx, c, addr.Unmap().String())
+		} else {
+			var response live.Response
+			response, e = live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "show", IP: addr.Unmap().String(), Sort: *sort, Limit: 1, Local: true})
+			if e == nil && len(response.NetworkIPs) == 1 {
+				row = response.NetworkIPs[0]
+			} else if e == nil {
+				e = errors.New("IP is not in the bounded RAM sample")
+			}
+		}
+		if e != nil {
+			return e
+		}
+		printNetworkRows(out, []observation.IP{row})
+		fmt.Fprintf(out, "Suspicion: %d/100 (heuristic)\nFirst seen: %s\nLast seen: %s\nEvidence at: %s\nPartial evidence: %t\n", row.Score, time.Unix(row.First, 0).Format(time.RFC3339), time.Unix(row.Last, 0).Format(time.RFC3339), timestamp(time.Unix(row.EvidenceAt, 0)), row.Partial)
+		if len(row.Reasons) == 0 {
+			fmt.Fprintln(out, "No threshold signal observed; this is not proof that an IP is safe.")
+		}
+		for _, reason := range row.Reasons {
+			fmt.Fprintln(out, "-", reason)
+		}
+		return nil
+	}
+	if command == "top" && *once && *watch {
+		return errors.New("--once and --watch are mutually exclusive")
+	}
+	if *interval < 250*time.Millisecond || *interval > time.Minute {
+		return errors.New("--interval must be 250ms..1m")
+	}
+	if command == "top" && !*once && (*watch || terminalOutput(out)) {
+		file, ok := out.(*os.File)
+		if !ok {
+			return errors.New("live top requires a terminal")
+		}
+		background, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		_, envNoColor := os.LookupEnv("NO_COLOR")
+		return ui.Run(background, ui.Options{Network: true, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, func(ctx context.Context, sort string) (live.Response, error) {
+			return networkFetch(ctx, c, sort, *n, *local)
+		})
+	}
+	r, e := networkFetch(ctx, c, *sort, *n, *local)
+	if e != nil {
+		return e
+	}
+	if command == "top" || command == "list" {
+		printNetworkRows(out, r.NetworkIPs)
+	}
+	printNetworkTotals(out, r)
+	return nil
+}

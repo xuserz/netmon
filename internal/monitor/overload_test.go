@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/live"
+	"netmon/internal/store"
 )
 
 func TestSlowDiskKeepsHeartbeatResponsiveWhileCaptureIsBlocked(t *testing.T) {

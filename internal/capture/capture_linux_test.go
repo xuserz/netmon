@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/packet"
+	"netmon/internal/packet"
 	"golang.org/x/sys/unix"
 )
 
 // Opt in: requires CAP_NET_RAW; uses only ephemeral loopback listeners, no DNS
 // service, firewall or host configuration changes.
 func TestLiveLoopback(t *testing.T) {
-	if os.Getenv("DNSMON_INTEGRATION") != "1" {
-		t.Skip("set DNSMON_INTEGRATION=1 to test AF_PACKET + kernel BPF")
+	if os.Getenv("NETMON_INTEGRATION") != "1" {
+		t.Skip("set NETMON_INTEGRATION=1 to test AF_PACKET + kernel BPF")
 	}
 	for _, network := range []string{"udp4", "udp6"} {
 		t.Run(network, func(t *testing.T) {

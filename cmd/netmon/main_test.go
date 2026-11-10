@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"dnsmon/internal/store"
+	"netmon/internal/store"
 )
 
 func TestReadCommandsAndExport(t *testing.T) {
@@ -98,8 +98,84 @@ func TestCanceledExportRetainsExistingCSVAndCleansSnapshot(t *testing.T) {
 	if e != nil || string(data) != "original export\n" {
 		t.Fatal(string(data), e)
 	}
-	matches, _ := filepath.Glob(filepath.Join(dir, ".dnsmon-*"))
+	matches, _ := filepath.Glob(filepath.Join(dir, ".netmon-*"))
 	if len(matches) != 0 {
 		t.Fatal("temporary exports leaked", matches)
+	}
+}
+
+func TestClusterKeygenNeverOverwritesExistingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key")
+	var out bytes.Buffer
+	if e := run([]string{"cluster", "keygen", "--out", path}, &out, &out); e != nil {
+		t.Fatal(e)
+	}
+	before, e := os.ReadFile(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if st, e := os.Stat(path); e != nil || st.Mode().Perm() != 0600 {
+		t.Fatal(st, e)
+	}
+	if e = run([]string{"cluster", "keygen", "--out", path}, &out, &out); e == nil {
+		t.Fatal("existing key overwritten")
+	}
+	after, _ := os.ReadFile(path)
+	if !bytes.Equal(before, after) {
+		t.Fatal("existing key changed")
+	}
+}
+
+func TestClusterReadScopesAndExportProtectBothDatabases(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "stats.db")
+	replica := local + ".cluster.db"
+	for _, item := range []struct {
+		path  string
+		count int64
+	}{{local, 7}, {replica, 13}} {
+		s, e := store.Open(item.path, true, 8, 2)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = s.Flush(map[netip.Addr]store.Delta{netip.MustParseAddr("::1"): {Requests: item.count, First: 1, Last: 2}}); e != nil {
+			t.Fatal(e)
+		}
+		s.Close()
+	}
+	config := filepath.Join(dir, "config.yaml")
+	data := "database: " + local + "\ncluster:\n  enabled: true\n  advertise: https://127.0.0.1:9845\n  key_file: " + filepath.Join(dir, "key") + "\n"
+	if e := os.WriteFile(config, []byte(data), 0600); e != nil {
+		t.Fatal(e)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{{[]string{"stats"}, "Total requests: 13"}, {[]string{"stats", "--local"}, "Total requests: 7"}, {[]string{"stats", "--db", local}, "Total requests: 7"}} {
+		var out bytes.Buffer
+		args := append([]string{"--config", config}, tc.args...)
+		if e := run(args, &out, &out); e != nil || !strings.Contains(out.String(), tc.want) {
+			t.Fatal(tc, out.String(), e)
+		}
+	}
+	for _, args := range [][]string{{"export", "--csv", local}, {"export", "--local", "--csv", replica}} {
+		var out bytes.Buffer
+		if e := run(append([]string{"--config", config}, args...), &out, &out); e == nil {
+			t.Fatal("export overwrote another cluster database", args)
+		}
+	}
+	for _, item := range []struct {
+		path string
+		want string
+	}{{local, "7"}, {replica, "13"}} {
+		s, e := store.Open(item.path, false, 0, 0)
+		if e != nil {
+			t.Fatal(e)
+		}
+		total, e := s.Totals(context.Background())
+		s.Close()
+		if e != nil || total.Requests != item.want {
+			t.Fatal(total, e)
+		}
 	}
 }

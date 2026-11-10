@@ -23,3 +23,19 @@ func TestLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestClusterConfiguration(t *testing.T) {
+	c := Default()
+	c.Cluster.Enabled = true
+	c.Cluster.Advertise = "https://192.0.2.1:9845"
+	c.Cluster.KeyFile = "/etc/netmon/cluster.key"
+	if e := c.Validate(); e != nil {
+		t.Fatal(e)
+	}
+	for _, bad := range []string{"http://192.0.2.1:9845", "https://192.0.2.1", "https://user:pass@192.0.2.1:9845", "https://192.0.2.1:9845/path", "https://192.0.2.1:99999"} {
+		c.Cluster.Advertise = bad
+		if e := c.Validate(); e == nil {
+			t.Fatal("invalid cluster URL accepted", bad)
+		}
+	}
+}

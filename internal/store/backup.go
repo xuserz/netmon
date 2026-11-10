@@ -18,7 +18,7 @@ import (
 // transaction. cleanup must be called after the returned database is closed.
 // The private temporary directory is created on the chosen export filesystem.
 func (s *Store) Snapshot(ctx context.Context, directory string) (*Store, func(), error) {
-	dir, e := os.MkdirTemp(directory, ".dnsmon-export-*")
+	dir, e := os.MkdirTemp(directory, ".netmon-export-*")
 	if e != nil {
 		return nil, nil, e
 	}

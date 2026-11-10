@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode"
 
-	"dnsmon/internal/live"
+	"netmon/internal/live"
 )
 
 type State struct {
@@ -24,6 +24,9 @@ type State struct {
 }
 
 func (s State) rowCount() int {
+	if s.Data.Network {
+		return len(s.Data.NetworkIPs)
+	}
 	if s.Sort == "rate" || s.Sort == "minute" {
 		return len(s.Data.Activity)
 	}
@@ -120,10 +123,13 @@ func spark(values []float64, n int) string {
 // plain text; color sequences are added after clipping, so IPv6 and tiny SSH
 // windows cannot wrap into another row or displace the footer.
 func Render(s State, width, height int) string {
+	if s.Data.Network {
+		return renderNetwork(s, width, height)
+	}
 	width = max(1, width)
 	height = max(1, height)
 	if width < 42 || height < 12 {
-		lines := []string{"dnsmon · enlarge terminal", fmt.Sprintf("Need at least 42×12; current %d×%d", width, height), "q: quit"}
+		lines := []string{"netmon · enlarge terminal", fmt.Sprintf("Need at least 42×12; current %d×%d", width, height), "q: quit"}
 		for len(lines) < height {
 			lines = append(lines, "")
 		}
@@ -142,7 +148,7 @@ func Render(s State, width, height int) string {
 		title = cut(title, inner)
 		lines = append(lines, paint("├"+title+strings.Repeat("─", inner-len([]rune(title)))+"┤", 60, s.Color))
 	}
-	top := " dnsmon " + s.Version + " "
+	top := " netmon " + s.Version + " "
 	top = cut(top, inner)
 	lines = append(lines, paint("╭"+top+strings.Repeat("─", inner-len([]rune(top)))+"╮", 81, s.Color))
 	h := s.Data.Health
@@ -153,16 +159,31 @@ func Render(s State, width, height int) string {
 	if s.Data.Source == "live" && !s.Data.SnapshotAt.IsZero() && time.Since(s.Data.SnapshotAt) > 3*time.Second {
 		mode = "STALE · snapshot " + ago(s.Data.SnapshotAt)
 	}
+	if h.ClusterEnabled && !s.Data.Cluster && s.Data.Source == "live" {
+		mode = "LOCAL · this server"
+	}
+	if s.Data.Cluster {
+		mode = "CLUSTER · saved totals"
+		if !s.Data.SnapshotAt.IsZero() && time.Since(s.Data.SnapshotAt) > 3*time.Second {
+			mode = "CLUSTER · STALE"
+		}
+		if h.ClusterCatchingUp {
+			mode = "CLUSTER · catching up"
+		}
+		if s.Data.Source != "live" {
+			mode = "CLUSTER · stored"
+		}
+	}
 	if s.Paused {
 		mode = "PAUSED"
 	}
 	statusColor := 120
-	if s.Data.Source != "live" || s.Paused || strings.HasPrefix(mode, "STALE") {
+	if s.Data.Source != "live" || s.Paused || strings.Contains(mode, "STALE") {
 		statusColor = 220
 	}
 	box(fmt.Sprintf(" %s   %s:%d   %s", mode, h.Interface, h.Port, time.Now().Format("15:04:05")), statusColor)
 	totalsLabel := "Requests"
-	if s.active() {
+	if s.active() || s.Data.Cluster {
 		totalsLabel = "Saved requests"
 	}
 	box(fmt.Sprintf(" %s %s   Clients %s   %.1f req/s", totalsLabel, number(s.Data.Totals.Requests), number(strconv.FormatInt(s.Data.Totals.Unique, 10)), s.Rate), 255)
@@ -179,6 +200,8 @@ func Render(s State, width, height int) string {
 	box(fmt.Sprintf(" Pending %d requests / %d IP slots   Retries %d   Saved %s", h.PendingRequests, h.PendingIPs, h.WriteRetries, ago(h.LastFlush)), 146)
 	if s.Error != "" {
 		box(" ! "+s.Error, 203)
+	} else if s.Data.Cluster && h.ClusterError != "" {
+		box(" ! Cluster: "+h.ClusterError, 203)
 	} else if h.CaptureError != "" {
 		box(" ! "+h.CaptureError, 203)
 	} else if h.FlushError != "" {
@@ -187,6 +210,8 @@ func Render(s State, width, height int) string {
 		box(fmt.Sprintf(" ! Waiting for storage %s; pending age %s", h.BlockedFor.Round(time.Second), h.PendingAge.Round(time.Second)), 203)
 	} else if s.active() && s.Data.ActivityPartial {
 		box(" ! Activity cache incomplete: IP eviction or concurrent sample", 220)
+	} else if s.Data.Cluster && s.Data.Source == "live" {
+		box(fmt.Sprintf(" Peers %d/%d online   Last exchange %s · CPU/RAM/activity are local", h.ClusterOnline, h.ClusterPeers, ago(h.ClusterLastSync)), 146)
 	} else {
 		box(" Rate "+spark(s.History, inner-8), 81)
 	}
@@ -196,6 +221,9 @@ func Render(s State, width, height int) string {
 	}
 	if s.Sort == "minute" {
 		title = "TOP CLIENTS · requests over 60 complete seconds ↓"
+	}
+	if s.Data.Cluster && s.active() {
+		title = "LOCAL " + title
 	}
 	edge(title)
 	// Header + rows share the same adaptive columns. Full IPv6 is retained in

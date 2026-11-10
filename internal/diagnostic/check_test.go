@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"dnsmon/internal/config"
+	"netmon/internal/config"
 )
 
 func TestMissingInterfaceExplainsHowToFix(t *testing.T) {
 	c := config.Default()
-	c.Interface = "missing-dnsmon"
+	c.Interface = "missing-netmon"
 	c.Database = filepath.Join(t.TempDir(), "stats.db")
 	found := false
 	for _, f := range Checks(c, true) {

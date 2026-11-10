@@ -1,192 +1,197 @@
-# dnsmon
+# netmon
 
-[![CI](https://github.com/xuserz/dnsmon/actions/workflows/release.yml/badge.svg)](https://github.com/xuserz/dnsmon/actions/workflows/release.yml)
+[![CI](https://github.com/xuserz/netmon/actions/workflows/release.yml/badge.svg)](https://github.com/xuserz/netmon/actions/workflows/release.yml)
 
-Lightweight DNS client accounting for Linux.
+Lightweight incoming network activity monitoring for Linux, written in Go.
 
-dnsmon counts incoming DNS queries per client IP and keeps cumulative counters
-in SQLite. A background systemd service captures traffic; a terminal dashboard
-shows live activity, resource usage, and capture health.
-
-Each client has exactly one database row: **IP address, request count, first seen,
-and last seen**. Domain names, individual queries, responses, and packet captures
-are never written to disk.
+See which IP addresses send traffic to your server, how much they send, and which
+show signs of flooding or TCP port scanning. Run a single monitor or combine
+multiple servers with encrypted peer-to-peer synchronization.
 
 ## Features
 
-- UDP and TCP DNS over IPv4 and IPv6.
-- TCP stream reassembly, retransmission handling, and bounded IP fragment buffers.
-- Color terminal dashboard with live counters, request rate, CPU, memory, and loss diagnostics.
-- PACKET_MMAP capture with kernel timestamps and bounded receive-ring memory.
-- Retry-safe SQLite batches, bounded hot-client caching, and database limits.
-- CLI lookup, lifetime and current-activity rankings, isolated CSV export, and startup checks.
-- Static Linux binaries for **amd64** and **arm64**, with SQLite included.
-- Passive capture on one interface, including the host side of Docker-published DNS.
+- Incoming IPv4/IPv6 packets, IP bytes, TCP SYN, UDP, and ICMP counters per source IP.
+- A **0–100 suspicion score**, with reasons and automatic decay.
+- Color terminal dashboard with live refresh, rankings, CPU, RAM, and loss diagnostics.
+- **Full nodes** store shared statistics in SQLite and synchronize with other full nodes.
+- **Forward nodes** capture and send observations using bounded RAM, without a local statistics database.
+- Configurable retention, receive-ring memory, queue capacity, and database limits.
+- Passive PACKET_MMAP capture before Docker NAT; no firewall changes or automatic blocking.
+- Static **amd64/arm64** releases with SQLite included; Go is not required on the server.
+- Legacy DNS query accounting remains available through `mode: dns`.
+
+The score is an explainable heuristic, not a probability that an IP is malicious.
+High traffic can be legitimate, and UDP/SYN source addresses can be spoofed.
+Review the evidence before using exported data in a blocklist.
 
 ## Install
 
-The release installer targets **Ubuntu/Debian with systemd**. It requires
-Linux 4.20+, `curl`, `tar`, and `sha256sum`. Go and a C compiler are only needed
-when [building from source](docs/development.md).
+Ubuntu/Debian with systemd, Linux 4.20+, `curl`, `tar`, and `sha256sum`:
 
 ```sh
-curl -fsSL https://github.com/xuserz/dnsmon/releases/latest/download/install-release.sh | sudo sh
+curl -fsSL https://github.com/xuserz/netmon/releases/latest/download/install-release.sh | sudo sh
 ```
 
-When running as root, use `sh` instead of `sudo sh`.
+As root, use `sh` instead of `sudo sh`. The installer selects your architecture,
+checks the SHA-256 checksum, and preserves existing configuration and statistics.
+Download bundles directly from [Releases](https://github.com/xuserz/netmon/releases).
 
-The installer selects the architecture, verifies the archive's SHA-256 checksum,
-and installs the binary, service unit, and configuration. It preserves existing
-configuration and statistics. Release files are also available on the
-[Releases page](https://github.com/xuserz/dnsmon/releases).
+## Upgrading from dnsmon
+
+The project is now **netmon**. Fresh installs use `netmon`, `netmon.service`,
+`/etc/netmon/config.yaml`, and `/var/lib/netmon`.
+
+The new release installer detects a standard dnsmon installation and migrates
+its service automatically. It retains the original config, key, databases,
+identities, data paths, and account. Only the active service changes to netmon;
+failed startup restores dnsmon. Custom service commands/accounts require manual
+migration. See [migration details](docs/operations.md#rename-from-dnsmon).
+
+Use the new download URL above after the first netmon release is published;
+older releases contain differently named binaries/archives.
 
 ## Quick start
 
-1. Find the interface where client traffic enters the host:
-
-   ```sh
-   ip -br address
-   ip route get 1.1.1.1
-   ```
-
-2. Review `/etc/dnsmon/config.yaml`. The installer attempts to select the interface
-   from the default route. Verify it before starting the service:
-
-   ```yaml
-   interface: ens3
-   destination_ip: ""
-   port: 53
-   ```
-
-   Use the interface shown after `dev` in the route output. For Docker, select
-   the ingress interface and the **published host port**, before DNAT.
-
-3. Check the configuration and start the service:
-
-   ```sh
-   sudo dnsmon check --startup
-   sudo systemctl enable --now dnsmon
-   sudo dnsmon status
-   sudo dnsmon top
-   ```
-
-Live counters appear as traffic arrives. SQLite is updated every 30 seconds by
-default. Only `dnsmon run` starts packet capture; inspection commands never start
-an additional monitor.
-
-## Usage
+Find the interface carrying incoming client traffic:
 
 ```sh
-dnsmon top                         # Interactive live dashboard
-dnsmon top -n 100 --interval 1s     # More clients, faster refresh
-dnsmon top --sort rate             # Rank by requests/s over 5 completed seconds
-dnsmon top --sort minute           # Rank by requests over 60 completed seconds
-dnsmon top --once                  # One committed SQLite snapshot
-dnsmon top --no-color
-dnsmon show 192.0.2.10
-dnsmon show 2001:db8::10
-dnsmon stats
-dnsmon list
-dnsmon export --csv stats.csv
-dnsmon status
-dnsmon check
+ip -br address
+ip route get 1.1.1.1
 ```
 
-Use `sudo` or an account in the `dnsmon` group to access installed statistics.
-Global `--config FILE` and `--db FILE` options can appear before or after the command.
+Review `/etc/netmon/config.yaml`; select the interface after `dev`, for example:
 
-### Live dashboard
+```yaml
+mode: network
+interface: ens3
+storage:
+  mode: full
+  retention: 24h
+```
 
-| Key | Action |
-| --- | --- |
-| `q`, `Ctrl+C` | Exit |
-| `↑` / `↓`, `j` / `k` | Scroll |
-| `PageUp` / `PageDown`, `Home` / `End` | Navigate the client list |
-| Space | Pause or resume updates |
-| `r` | Refresh |
-| `c` | Toggle colors |
-| `s` | Cycle total / requests per second / last minute ranking |
-
-The dashboard refreshes every two seconds by default and supports up to 1,000
-rows. Activity views show per-IP requests/s, requests in the last minute, and
-share of observed traffic. Their bounded RAM cache resets on restart; an
-incomplete sample is marked explicitly. SQLite keeps its original four fields.
-
-`NO_COLOR` disables colors. Redirecting `top` to a file or pipe automatically
-produces a single plain-text snapshot; `--once` selects that mode explicitly.
-
-`LIVE` includes uncommitted counters from the running service, published at most
-once per second. `STALE` shows the age of an older snapshot. `STORED` uses
-SQLite when the live feed is unavailable. Commands such as `stats`, `show`,
-`list`, and `export` read committed data and may lag behind the live dashboard.
-
-## Configuration
-
-The configuration file is `/etc/dnsmon/config.yaml`. See
-[dnsmon.yaml](dnsmon.yaml) for defaults and the
-[configuration reference](docs/configuration.md) for all options.
-
-After changing it:
+Then start the service:
 
 ```sh
-sudo dnsmon check --startup
-sudo systemctl restart dnsmon
+sudo netmon check --startup
+sudo systemctl enable --now netmon
+sudo netmon status
+sudo netmon top
 ```
 
-Capture is limited to incoming traffic on one selected interface and port.
-DoH, DoT, DNSCrypt, and encrypted DNS payloads are not decoded. For Docker,
-multiple interfaces, VLANs, and TCP limitations, see
-[capture scope](docs/configuration.md#capture-scope).
+Fresh installations use network mode. **Existing configurations without `mode`
+keep DNS mode.** Add `mode: network` to switch. Network counters use a separate
+`stats.db.network.db` database; previous DNS statistics remain intact.
 
-## Update and uninstall
+On Docker hosts choose the external ingress interface before DNAT. Only traffic
+crossing the selected interface is observed. A packet counter does not confirm
+that the server accepted a request or established a connection.
 
-Update to the latest published release:
+## Commands
 
 ```sh
-sudo /usr/local/libexec/dnsmon/install-release.sh
+netmon top                          # Live color dashboard; q quits
+netmon top --sort score             # Suspicion, highest first
+netmon top --sort total             # Most incoming packets
+netmon top --sort bytes
+netmon top --sort syn
+netmon top -n 100 --interval 1s
+netmon top --once                   # Plain text snapshot
+netmon top --no-color
+netmon show 192.0.2.10              # Counters, score, reasons
+netmon stats                       # Shared saved window on full nodes
+netmon stats --local               # Bounded RAM view of this process
+netmon list                        # All saved IPs; uses a temporary DB snapshot
+netmon export --csv stats.csv
+netmon nodes                       # Storage peer identities and errors
+netmon status                      # Capture, queue and delivery diagnostics
 ```
 
-The installer preserves configuration and data, restarts an active service, and
-restores the previous binary and unit if the updated service fails its startup
-health checks. An inactive service is not automatically enabled.
+Use `sudo` or an account in the `netmon` group (`dnsmon` on migrated installations). Global `--config FILE` and
+`--db FILE` flags work before or after the command. Read commands never start
+another capture process.
 
-Uninstall the program:
+In the dashboard: arrows or `j/k` scroll, PageUp/PageDown navigate, Space pauses,
+`r` refreshes, `c` toggles color, and `s` cycles the four rankings. `NO_COLOR` is
+supported. Full-node views show committed shared data and can lag behind capture;
+`--local` and forward-node views show a bounded sample of current-process activity.
+
+## Multiple servers and storage roles
+
+Every **full** node keeps a replica of the shared retained statistics. There is
+no primary server or external database. A **forward** node sends its own
+observations to a full node and keeps no SQLite database or disk spool.
+
+```yaml
+mode: network
+storage:
+  mode: forward
+  queue_memory_mb: 8
+cluster:
+  enabled: true
+  name: edge-1
+  key_file: /etc/netmon/cluster.key
+  peers: ["https://storage.example.net:9845"]
+```
+
+Forward nodes make outbound connections and do not need an advertised listener.
+Use the same secret key, retention, and rating settings across members. A full
+node can set `network.capture: false` to serve only as storage.
+
+Forwarding waits for a durable acknowledgement from one full node; replication
+to additional full nodes follows asynchronously. Retries do not double-count
+observations. During outages the RAM queue is bounded: overflow, expiry, process
+crashes, or shutdown can lose observations. For local persistence, select `full`.
+
+Follow the [network monitoring and cluster guide](docs/network.md) for complete
+configurations, rating rules, failure behavior, and migration instructions.
+
+## Configuration and operations
+
+See [netmon.yaml](netmon.yaml) and the [configuration reference](docs/configuration.md).
+After editing the configuration, run `netmon check --startup` and restart the service.
+The default retained window is 24 hours; database capacity must match your traffic.
+For a 20 GiB main-database cap, set `max_database_mb: 20480`; WAL is additional.
+
+Update:
 
 ```sh
-sudo /usr/local/libexec/dnsmon/uninstall.sh
+sudo /usr/local/libexec/netmon/install-release.sh
 ```
 
-Uninstalling retains the database, configuration, and service account. See
-[operations](docs/operations.md) for version selection, backups, and troubleshooting.
+Uninstall the program while retaining configuration and data:
+
+```sh
+sudo /usr/local/libexec/netmon/uninstall.sh
+```
+
+See [operations](docs/operations.md) for backups and troubleshooting. The installer
+preserves existing configuration, so updates do not automatically change modes.
 
 ## Development
 
-Source builds require **Go 1.25+**, a C compiler, and Make. Python 3 is used for
-installer and terminal integration tests.
+Source builds require **Go 1.25+**, a C compiler, Make, and Python 3 for integration tests.
 
 ```sh
-git clone https://github.com/xuserz/dnsmon.git
-cd dnsmon
+git clone https://github.com/xuserz/netmon.git
+cd netmon
 make build
 make check
 python3 -m unittest discover -s scripts/tests -v
 ```
 
-Changes and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Follow the
-[development guide](docs/development.md) for static builds, network integration
-tests, and load testing.
-
-GitHub Actions checks pushes and pull requests. Successful pushes to the default
-branch publish tested amd64 and arm64 release bundles automatically.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [development guide](docs/development.md).
+GitHub Actions tests pushes and pull requests; successful default-branch pushes
+publish static amd64 and arm64 release bundles.
 
 ## Documentation
 
+- [Network mode, suspicion rating, and storage roles](docs/network.md)
 - [Configuration and capture scope](docs/configuration.md)
-- [Operations, storage, and troubleshooting](docs/operations.md)
-- [Development, testing, and releases](docs/development.md)
+- [Legacy DNS peer-to-peer clustering](docs/cluster.md)
+- [Operations and troubleshooting](docs/operations.md)
+- [Development and testing](docs/development.md)
 - [Changelog](CHANGELOG.md)
-- [Contributing](CONTRIBUTING.md)
 
 ## License
 
-[MIT](LICENSE) © 2026 xuserz. See [third-party notices](THIRD_PARTY_NOTICES.md) for bundled dependencies.
+[MIT](LICENSE) © 2026 xuserz. See [third-party notices](THIRD_PARTY_NOTICES.md).

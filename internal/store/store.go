@@ -24,13 +24,20 @@ type Client struct {
 	Last     int64  `json:"last_seen"`
 }
 type Store struct {
-	DB       *sql.DB
-	path     string
-	walLimit int64
-	cache    *clientCache
+	DB        *sql.DB
+	path      string
+	walLimit  int64
+	cache     *clientCache
+	replicate bool
 }
 
 func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
+	return openDatabase(path, write, maxMB, walMB, true)
+}
+func OpenBare(path string, write bool, maxMB, walMB int64) (*Store, error) {
+	return openDatabase(path, write, maxMB, walMB, false)
+}
+func openDatabase(path string, write bool, maxMB, walMB int64, clients bool) (*Store, error) {
 	mode := "ro"
 	if write {
 		mode = "rwc"
@@ -92,10 +99,18 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 			}
 		}
 	}
-	if write {
+	if write && clients {
 		if err = migrate(db); err != nil {
 			return nil, err
 		}
+		// Once enabled, retain the coalesced feed even while networking is disabled,
+		// so re-enabling the cluster catches up every locally committed update.
+		var tracked int
+		if err = db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='replica_source'").Scan(&tracked); err != nil {
+			return nil, err
+		}
+		s.replicate = tracked != 0
+
 	}
 	ok = true
 	return s, nil

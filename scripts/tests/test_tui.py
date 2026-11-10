@@ -19,10 +19,10 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-BINARY = Path(os.environ.get("DNSMON_BINARY", ROOT / "bin/dnsmon"))
+BINARY = Path(os.environ.get("NETMON_BINARY", ROOT / "bin/netmon"))
 
 
-@unittest.skipUnless(BINARY.is_file(), "build bin/dnsmon first to run terminal integration tests")
+@unittest.skipUnless(BINARY.is_file(), "build bin/netmon first to run terminal integration tests")
 class TerminalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -114,10 +114,15 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"Unique IPs: 100", output)
         self.assertEqual(output.count(b"192.0.2."), 3)
 
-    def live_server(self, slow=False):
+    def live_server(self, slow=False, network=False):
         listener = socket.socket(socket.AF_UNIX)
         try:
-            listener.bind(str(self.db) + ".sock")
+            if network:
+                directory = Path(self.temp.name) / "run"
+                directory.mkdir()
+                listener.bind(str(directory / "monitor.sock"))
+            else:
+                listener.bind(str(self.db) + ".sock")
         except OSError as error:
             listener.close()
             if error.errno == errno.EPERM:
@@ -150,6 +155,13 @@ class TerminalTests(unittest.TestCase):
                                     "activity": [{"ip":"192.0.2.77","rate":123.4,"minute":5678,"share_percent":12.3}],
                                     "clients": [{"ip": "192.0.2.1", "requests": 777777,
                                                  "first_seen": 1794272400, "last_seen": 1794272400}]}
+                        if network:
+                            response = {"network": True, "source": "live", "snapshot_at": now,
+                                "health": {"pid": 12345, "mode": "network", "storage_mode": "forward",
+                                           "interface": "ens3", "counted_requests": 777777, "rss_bytes": 15 << 20},
+                                "network_totals": {"ips": 1, "packets": 777777, "bytes": 77777700},
+                                "network_ips": [{"ip": "192.0.2.77", "packets": 777777,
+                                                 "bytes": 77777700, "syn": 12345, "suspicion": 85}]}
                         conn.sendall(json.dumps(response).encode() + b"\n")
                     except OSError:
                         pass
@@ -210,4 +222,19 @@ class TerminalTests(unittest.TestCase):
             self.process.send_signal(signal.SIGCONT)
         self.data = b""
         self.until(b"\x1b[?1049h")
+        self.quit_and_verify_restore()
+
+    def test_network_forward_rating_color_sort_and_terminal_restore(self):
+        self.live_server(network=True)
+        config = Path(self.temp.name) / "network.yaml"
+        config.write_text(f"mode: network\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {Path(self.temp.name) / 'run'}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n")
+        self.start("--config", str(config), wait_for=b"192.0.2.77")
+        self.assertIn(b"777,777", self.data)
+        self.assertIn(b"85", self.data)
+        self.assertIn(b"\x1b[38;5;203m", self.data)
+        self.until("FORWARD · RAM SAMPLE".encode())
+        for kind in (b"total", b"bytes", b"syn", b"score"):
+            self.data = b""
+            os.write(self.master, b"s")
+            self.until(b"sort " + kind)
         self.quit_and_verify_restore()

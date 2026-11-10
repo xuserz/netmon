@@ -1,4 +1,4 @@
-module dnsmon
+module netmon
 
 go 1.25.0
 

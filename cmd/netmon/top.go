@@ -9,37 +9,44 @@ import (
 	"syscall"
 	"time"
 
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
-	"dnsmon/internal/ui"
+	"netmon/internal/live"
+	"netmon/internal/store"
+	"netmon/internal/ui"
 )
 
 // A stopped or older daemon remains inspectable through a read-only SQLite
 // fallback. Cache unchanged snapshots so an idle screen does no database work.
 type topFetcher struct {
-	db     string
-	limit  int
-	cached live.Response
-	stamp  string
+	storedDB  string
+	localOnly bool
+	cluster   bool
+	db        string
+	limit     int
+	cached    live.Response
+	stamp     string
 }
 
 func (f *topFetcher) Fetch(ctx context.Context, sort string) (live.Response, error) {
-	if r, e := live.Fetch(ctx, f.db, live.Request{Op: "top", Limit: f.limit, Sort: sort}); e == nil {
+	if r, e := live.Fetch(ctx, f.db, live.Request{Op: "top", Limit: f.limit, Sort: sort, Local: f.localOnly}); e == nil {
 		return r, nil
 	}
 	if sort != "total" {
-		return live.Response{Source: "stored", Sort: sort}, nil
+		return live.Response{Source: "stored", Sort: sort, Cluster: f.cluster}, nil
+	}
+	readDB := f.storedDB
+	if readDB == "" {
+		readDB = f.db
 	}
 	stamp := ""
 	for _, suffix := range []string{"", "-wal"} {
-		if st, e := os.Stat(f.db + suffix); e == nil {
+		if st, e := os.Stat(readDB + suffix); e == nil {
 			stamp += fmt.Sprintf("%d:%d;", st.ModTime().UnixNano(), st.Size())
 		}
 	}
 	if f.cached.Source != "" && stamp == f.stamp {
 		return f.cached, nil
 	}
-	s, e := store.Open(f.db, false, 0, 0)
+	s, e := store.Open(readDB, false, 0, 0)
 	if e != nil {
 		return live.Response{}, e
 	}
@@ -48,12 +55,12 @@ func (f *topFetcher) Fetch(ctx context.Context, sort string) (live.Response, err
 	if e != nil {
 		return live.Response{}, e
 	}
-	r := live.Response{Clients: rows, Totals: totals, Source: "stored"}
+	r := live.Response{Clients: rows, Totals: totals, Source: "stored", Cluster: f.cluster}
 	f.cached = r
 	f.stamp = stamp
 	return r, nil
 }
-func interactiveTop(out io.Writer, db string, limit int, interval time.Duration, noColor bool, sort string) error {
+func interactiveTop(out io.Writer, db string, limit int, interval time.Duration, noColor bool, sort string, readDB string, localOnly bool, cluster bool) error {
 	file, ok := out.(*os.File)
 	if !ok {
 		return fmt.Errorf("--watch requires a terminal")
@@ -64,7 +71,7 @@ func interactiveTop(out io.Writer, db string, limit int, interval time.Duration,
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	_, noColorEnv := os.LookupEnv("NO_COLOR")
-	fetch := &topFetcher{db: db, limit: limit}
+	fetch := &topFetcher{db: db, limit: limit, storedDB: readDB, localOnly: localOnly, cluster: cluster}
 	return ui.Run(ctx, ui.Options{In: os.Stdin, Out: file, Interval: interval, Version: version, Sort: sort, Color: !noColor && !noColorEnv}, fetch.Fetch)
 }
 func terminalOutput(out io.Writer) bool {

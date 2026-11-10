@@ -1,0 +1,176 @@
+package network
+
+import (
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"netmon/internal/cluster"
+	"netmon/internal/config"
+	"netmon/internal/observation"
+)
+
+func Read(ctx context.Context, c config.Config, sort string, n int) ([]observation.IP, observation.Totals, error) {
+	s, e := openDisk(c, false)
+	if e != nil {
+		return nil, observation.Totals{}, e
+	}
+	defer s.Close()
+	return s.View(ctx, sort, n)
+}
+func ReadIP(ctx context.Context, c config.Config, ip string) (observation.IP, error) {
+	s, e := openDisk(c, false)
+	if e != nil {
+		return observation.IP{}, e
+	}
+	defer s.Close()
+	return s.Show(ctx, ip)
+}
+func ReadPeers(ctx context.Context, c config.Config) ([]Peer, error) {
+	s, e := openDisk(c, false)
+	if e != nil {
+		return nil, e
+	}
+	defer s.Close()
+	return s.Peers(ctx)
+}
+func csvFields(row observation.IP) []string {
+	reasons, _ := json.Marshal(row.Reasons)
+	return []string{row.IP, strconv.FormatInt(row.Packets, 10), strconv.FormatInt(row.Bytes, 10), strconv.FormatInt(row.TCP, 10), strconv.FormatInt(row.SYN, 10), strconv.FormatInt(row.UDP, 10), strconv.FormatInt(row.ICMP, 10), time.Unix(row.First, 0).UTC().Format(time.RFC3339), time.Unix(row.Last, 0).UTC().Format(time.RFC3339), strconv.Itoa(row.Score), string(reasons), strconv.FormatBool(row.Partial)}
+}
+func Export(ctx context.Context, c config.Config, path string) error {
+	target, e := filepath.Abs(path)
+	if e != nil {
+		return e
+	}
+	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, RuntimeBase(c)} {
+		if base == "" {
+			continue
+		}
+		for _, suffix := range []string{"", "-wal", "-shm", ".sock", ".lock"} {
+			protected := base + suffix
+			resolved, _ := filepath.EvalSymlinks(target)
+			real, _ := filepath.EvalSymlinks(protected)
+			same := target == protected || resolved != "" && (resolved == protected || resolved == real)
+			if a, err := os.Stat(target); err == nil {
+				if b, err := os.Stat(protected); err == nil && os.SameFile(a, b) {
+					same = true
+				}
+			}
+			if same {
+				return errors.New("network CSV must not overwrite a database, key, or runtime file")
+			}
+		}
+	}
+	s, e := openDisk(c, false)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	copy, cleanup, e := s.r.Snapshot(ctx, filepath.Dir(target))
+	if e != nil {
+		return e
+	}
+	defer cleanup()
+	defer copy.Close()
+	f, e := os.CreateTemp(filepath.Dir(target), ".netmon-network-csv-*")
+	if e != nil {
+		return e
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	writer := csv.NewWriter(f)
+	if e = writer.Write([]string{"ip", "packets", "bytes", "tcp_packets", "tcp_syn", "udp_packets", "icmp_packets", "first_seen", "last_seen", "suspicion", "reasons", "partial"}); e != nil {
+		return e
+	}
+	rows, e := copy.DB.QueryContext(ctx, "SELECT "+ipColumns+" FROM net_ips ORDER BY priority DESC,ip")
+	if e != nil {
+		return e
+	}
+	defer rows.Close()
+	now := time.Now()
+	for rows.Next() {
+		row, _, err := scanIP(rows, s.policy, now)
+		if err != nil {
+			return err
+		}
+		if e = writer.Write(csvFields(row)); e != nil {
+			return e
+		}
+	}
+	if e = rows.Err(); e != nil {
+		return e
+	}
+	writer.Flush()
+	if e = writer.Error(); e != nil {
+		return e
+	}
+	if e = f.Sync(); e != nil {
+		return e
+	}
+	if e = f.Close(); e != nil {
+		return e
+	}
+	return os.Rename(f.Name(), target)
+}
+func Check(c config.Config) error {
+	if e := c.Validate(); e != nil {
+		return e
+	}
+	if c.Cluster.Enabled {
+		if _, e := cluster.ReadKey(c.Cluster.KeyFile); e != nil {
+			return fmt.Errorf("network cluster key: %w", e)
+		}
+	}
+	return nil
+}
+
+// List uses a private copy so a slow output pipe cannot pin the capture WAL.
+func List(ctx context.Context, c config.Config, directory, kind string, visit func(observation.IP) error) (observation.Totals, error) {
+	column, e := rank(kind)
+	if e != nil {
+		return observation.Totals{}, e
+	}
+	s, e := openDisk(c, false)
+	if e != nil {
+		return observation.Totals{}, e
+	}
+	defer s.Close()
+	copy, cleanup, e := s.r.Snapshot(ctx, directory)
+	if e != nil {
+		return observation.Totals{}, e
+	}
+	defer cleanup()
+	defer copy.Close()
+	tx, e := copy.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return observation.Totals{}, e
+	}
+	defer tx.Rollback()
+	totals, e := readTotals(ctx, tx)
+	if e != nil {
+		return totals, e
+	}
+	rows, e := tx.QueryContext(ctx, "SELECT "+ipColumns+" FROM net_ips ORDER BY "+column+" DESC,ip")
+	if e != nil {
+		return totals, e
+	}
+	defer rows.Close()
+	now := time.Now()
+	for rows.Next() {
+		row, _, err := scanIP(rows, s.policy, now)
+		if err != nil {
+			return totals, err
+		}
+		if e = visit(row); e != nil {
+			return totals, e
+		}
+	}
+	return totals, rows.Err()
+}

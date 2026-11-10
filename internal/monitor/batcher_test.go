@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/store"
 	"github.com/mattn/go-sqlite3"
 )
 

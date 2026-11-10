@@ -43,10 +43,10 @@ jobs:
       - name: Test AF_PACKET and kernel BPF on loopback
         shell: bash
         run: |
-          sudo env DNSMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor -run Live
+          sudo env NETMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor ./internal/cluster -run "Live|ThreePeers|WrongCluster"
       - name: Paced real-binary load test on isolated loopback
         run: |
-          sudo unshare --net sh -c 'set -e; ip link set lo up; DNSMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_recovery.py -v; python3 scripts/loadtest.py --rate 1000 --seconds 3; python3 scripts/loadtest.py --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200'
+          sudo unshare --net sh -c 'set -e; ip link set lo up; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_recovery.py -v; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_cluster.py -v; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_network.py -v; python3 scripts/loadtest.py --rate 1000 --seconds 3; python3 scripts/loadtest.py --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200; python3 scripts/loadtest.py --mode network --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200'
 
   build:
     name: Static Linux ${{ matrix.arch }}
@@ -81,11 +81,11 @@ jobs:
           test "$(go env GOARCH)" = "$TARGET_ARCH"
           go test ./...
           make static VERSION="$VERSION"
-          test "$(./bin/dnsmon version)" = "$VERSION"
-          ./bin/dnsmon --help > /dev/null
-          DNSMON_BINARY="$PWD/bin/dnsmon" python3 -m unittest discover -s scripts/tests -v
-          file bin/dnsmon
-          case "$(file -b bin/dnsmon)" in
+          test "$(./bin/netmon version)" = "$VERSION"
+          ./bin/netmon --help > /dev/null
+          NETMON_BINARY="$PWD/bin/netmon" python3 -m unittest discover -s scripts/tests -v
+          file bin/netmon
+          case "$(file -b bin/netmon)" in
             *'statically linked'*|*'static-pie linked'*) ;;
             *) echo 'Expected a fully static executable' >&2; exit 1 ;;
           esac
@@ -93,7 +93,7 @@ jobs:
         run: ./scripts/package-release.sh "$TARGET_ARCH" dist
       - uses: actions/upload-artifact@v7
         with:
-          name: dnsmon-linux-${{ matrix.arch }}
+          name: netmon-linux-${{ matrix.arch }}
           path: dist/*.tar.gz
           if-no-files-found: error
           compression-level: 0
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          pattern: dnsmon-linux-*
+          pattern: netmon-linux-*
           path: dist
           merge-multiple: true
       - name: Checksums and release notes
@@ -126,8 +126,8 @@ jobs:
         run: |
           cp scripts/install-release.sh dist/install-release.sh
           cd dist
-          sha256sum dnsmon_linux_amd64.tar.gz dnsmon_linux_arm64.tar.gz install-release.sh > SHA256SUMS
+          sha256sum netmon_linux_amd64.tar.gz netmon_linux_arm64.tar.gz install-release.sh > SHA256SUMS
           printf 'Commit: %s\n\nStatic Linux binaries for amd64 and arm64. Go is not required on the server.\n\nInstall or update as root:\n\n    curl -fsSL https://github.com/%s/releases/latest/download/install-release.sh | sh\n\nExisting configuration and statistics are preserved.\n' "$TARGET_COMMIT" "$GH_REPO" > "$RUNNER_TEMP/release-notes.md"
       - name: Publish only after both bundles are ready
         run: |
-          gh release create "$VERSION" dist/* --target "$TARGET_COMMIT" --latest --title "dnsmon $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release create "$VERSION" dist/* --target "$TARGET_COMMIT" --latest --title "netmon $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

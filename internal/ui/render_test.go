@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/live"
+	"netmon/internal/observation"
+	"netmon/internal/store"
 )
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
@@ -79,6 +80,28 @@ func TestActivityRendererFitsAndLabelsWindows(t *testing.T) {
 			if !strings.Contains(out, "REQ/S") {
 				t.Fatal(out)
 			}
+		}
+	}
+}
+
+func TestNetworkRendererFitsAndShowsRiskAndLoss(t *testing.T) {
+	s := State{Sort: "score", Color: true, Data: live.Response{Network: true, Source: "live", SnapshotAt: time.Now(), Health: live.Health{StorageMode: "forward", QueueRejected: 42, DiscardedSamples: 3}, NetworkIPs: []observation.IP{{IP: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", Score: 85, Counters: observation.Counters{Packets: 123456, SYN: 999}}}}}
+	for _, size := range [][2]int{{1, 1}, {20, 8}, {50, 12}, {80, 24}, {110, 40}} {
+		output := ansi.ReplaceAllString(Render(s, size[0], size[1]), "")
+		lines := strings.Split(output, "\r\n")
+		if len(lines) != size[1] {
+			t.Fatal(size, len(lines))
+		}
+		for _, line := range lines {
+			if len([]rune(line)) != size[0] {
+				t.Fatal(size, line)
+			}
+		}
+	}
+	output := Render(s, 110, 24)
+	for _, want := range []string{"85", "123,456", "RAM SAMPLE", "discarded", "Queue rejects 42"} {
+		if !strings.Contains(output, want) {
+			t.Fatal(want, output)
 		}
 	}
 }

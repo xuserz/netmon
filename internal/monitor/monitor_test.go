@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/store"
+	"netmon/internal/config"
+	"netmon/internal/store"
 )
 
 type fakeSource struct {

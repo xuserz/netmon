@@ -2,27 +2,63 @@
 
 [Back to README](../README.md)
 
-The installed configuration is `/etc/dnsmon/config.yaml`. The source distribution
-includes a complete example in [dnsmon.yaml](../dnsmon.yaml).
+The installed configuration is `/etc/netmon/config.yaml`. The source distribution
+includes a complete example in [netmon.yaml](../netmon.yaml).
 
 ```sh
-sudoedit /etc/dnsmon/config.yaml
-sudo dnsmon check --startup
-sudo systemctl restart dnsmon
+sudoedit /etc/netmon/config.yaml
+sudo netmon check --startup
+sudo systemctl restart netmon
 ```
 
 Unknown keys and invalid values cause startup to fail with an error. Missing
 keys use their defaults. Byte budgets and limits named `*_mb` use binary units:
 one MiB is 1,048,576 bytes.
 
-## Reference
+## Network mode
+
+Fresh-install [netmon.yaml](../netmon.yaml) selects `mode: network`, a 5s flush,
+256 MiB main-database cap, and a 4 MiB receive ring. Omitted keys retain backward
+compatible defaults (DNS mode, 30s, 64 MiB, 2 MiB). Explicit settings always win.
+See [network monitoring](network.md) for complete full/forward configurations.
+
+| Option | Omitted default | Description |
+| --- | --- | --- |
+| `mode` | `dns` | `network` for packet activity/rating, `dns` for legacy query accounting. |
+| `storage.mode` | `full` | `full` stores shared data; `forward` sends from RAM and opens no statistics DB. Forward requires network mode and at least one cluster peer. |
+| `storage.retention` | `24h` | Network observation lifetime, 1h..720h. Every member must agree. |
+| `storage.queue_memory_mb` | `8` | Estimated queued snapshot/entry budget, 1..256 MiB; process overhead is additional. |
+| `network.capture` | `true` | `false` makes a full node a receiver-only replica. |
+| `network.ports` | `[]` | Optional destination-port allowlist, at most 64 entries. Empty includes all ports/protocols. |
+| `network.exclude_ports` | `[]` | Destination-port exclusions, at most 64. Replication TCP ports are additionally excluded automatically in both directions. |
+| `network.runtime_directory` | `/run/netmon` | Absolute Unix socket/lock directory, at most 80 bytes. Custom paths need service write access. |
+| `network.rating.pps_threshold` | `1000` | First packet-rate tier, 1..1,000,000,000 packets per wall-clock second. |
+| `network.rating.syn_pps_threshold` | `100` | First SYN-rate tier, same numeric range. |
+| `network.rating.scan_ports_threshold` | `8` | First distinct-SYN-port tier within a bounded 60s sample, 2..16. |
+| `network.rating.half_life` | `1h` | Score decay half-life, 1m..168h. |
+
+In network mode, `database` gains `.network.db` unless already present. Full nodes
+retain observations by minute and share the saved window; forward nodes use RAM
+only. `max_activity_ips` bounds per-IP rate/port context (a value of 0 retains one
+entry in network mode), not the number of IPs allowed in durable storage.
+`max_database_mb` caps that network database, and WAL is additional. On a full
+queue, capture continues and reports rejected/discarded observations rather than
+waiting for disk/network I/O. Retention does not prevent reaching the size cap.
+Changing rating/retention requires a fresh network database on full members.
+
+`port`, `max_pending_ips`, `hot_cache_ips`, `write_retry_timeout`, and all TCP/IP
+reassembly settings below belong to DNS mode and do not control network mode.
+Network writes retry bounded snapshots until accepted or expired, and show their
+last failure through `status`. No disk writes occur on a forward node.
+
+## Common and legacy DNS reference
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `interface` | `eth0` | One ingress interface. `any` is not supported. A fresh installation attempts to select the default-route interface. |
 | `destination_ip` | `""` | One destination IPv4/IPv6 address; empty accepts all destinations on the selected interface. |
 | `port` | `53` | Destination port observed before NAT, from 1 to 65535. |
-| `database` | `/var/lib/dnsmon/stats.db` | Absolute SQLite path. Custom locations require ownership and systemd write-access configuration. |
+| `database` | `/var/lib/netmon/stats.db` | Absolute SQLite path. Custom locations require ownership and systemd write-access configuration. |
 | `flush_interval` | `30s` | Target interval for submitting a batch to SQLite, from 1s to 1h. |
 | `max_pending_ips` | `10000` | Maximum distinct IPs per in-memory batch. A new IP beyond this limit triggers early submission. |
 | `max_database_mb` | `64` | Hard limit on the main SQLite database in MiB. WAL is separate. |
@@ -61,12 +97,25 @@ This is an upper bound, not preallocated disk space. See
 The receive ring uses 1 MiB blocks and a 64 ms block retirement timeout. Capture
 borrows packet bytes from mapped blocks; UDP parsing avoids a userspace copy.
 TCP and fragment reassembly copy only data they must retain. Allocation failure
-is reported at startup; dnsmon does not silently select a smaller ring.
+is reported at startup; netmon does not silently select a smaller ring.
 
 The activity cache uses 61 per-second counters per retained IP and consumes
 several MiB at the default capacity, plus Go metadata and GC overhead. It is
 independent of both pending-write batches and the confirmed writer cache.
 Evicting an activity entry never removes or changes cumulative SQLite counters.
+
+## Cluster configuration
+
+`cluster.enabled` defaults to `false`. The optional block accepts `name`,
+`listen` (default `0.0.0.0:9845`), `advertise`, `key_file`, `peers` (maximum 32),
+and `sync_interval` (default `5s`, allowed `1s..1h`). An enabled cluster requires an absolute key-file path. Full nodes need a
+reachable advertised HTTPS origin with an explicit port. Network forward nodes
+need only outbound peers, with no listener/advertised address. See [cluster setup](cluster.md) for complete examples.
+
+In legacy DNS mode, the database and WAL budgets apply separately to local capture
+and the cluster replica. Existing client rows keep their four fields; enabled replication adds
+metadata tables and a durable per-origin replica. These budgets are not a total
+disk quota.
 
 ## Capture scope
 
@@ -97,7 +146,8 @@ server or firewall may reject them; a count does not confirm successful resoluti
 
 ### Docker and NAT
 
-For externally published Docker DNS, select the host's external ingress
+For network mode, port allowlists use `network.ports`, not `port`.
+For externally published Docker DNS in legacy mode, select the host's external ingress
 interface and the published port. With `5353:53/udp`, configure `port: 5353`.
 The same setting applies to the host-side TCP port if TCP is published.
 `destination_ip` is the destination address before DNAT.
@@ -111,10 +161,10 @@ boundary.
 
 For VLANs, select the VLAN interface, such as `ens3.100`, rather than a tagged
 trunk. Tunnels, overlay encapsulation, and VLAN trunk frames are not decoded.
-Restart dnsmon after deleting or recreating its selected interface: the socket
+Restart netmon after deleting or recreating its selected interface: the socket
 is bound to the interface index.
 
-### Query counting
+### Query counting (legacy `mode: dns`)
 
 - **UDP:** one complete, structurally valid DNS request per datagram. A retried
   UDP query is another received request; transaction IDs are not deduplication keys.
@@ -131,7 +181,7 @@ EDNS COOKIE probes, NOTIFY, UPDATE, and DSO wire structure are supported.
 RDATA semantics for every record type and packet checksums are not validated.
 Responses with QR=1 are excluded.
 
-A TCP connection started before dnsmon, or evicted after its idle timeout, is
+A TCP connection started before netmon, or evicted after its idle timeout, is
 skipped until a new SYN. Guessing the next message boundary could create false
 counts. TCP Fast Open data is supported. Completed connections use a separate
 bounded retransmission cache; incomplete state is not restored after restart.

@@ -1,6 +1,6 @@
-# Contributing to dnsmon
+# Contributing to netmon
 
-Bug reports and pull requests are welcome. For bugs, include `dnsmon version`,
+Bug reports and pull requests are welcome. For bugs, include `netmon version`,
 your Linux architecture, relevant configuration and logs, and reproduction steps.
 Remove real client IPs and other sensitive information before sharing output.
 
@@ -12,8 +12,11 @@ For changes:
    Report skipped integration tests and the commands you ran.
 4. Update relevant documentation and the **Unreleased** section of [CHANGELOG.md](CHANGELOG.md).
 
-Preserve bounded memory, deterministic counting, and one row per client with
-exactly four fields. Do not persist domains, individual queries, or packet data.
+Preserve bounded memory, replay-safe counters, and bounded synchronization work.
+Network mode must keep forward nodes free of SQLite/disk spools and expose
+overflow failures. Rating changes need deterministic evidence/decay tests. Keep
+the legacy DNS `clients` table at exactly four fields. Do not persist domains,
+individual queries, payloads, or packet captures.
 Avoid additional runtime dependencies unless the change justifies them.
 
 See the [development guide](docs/development.md) for network tests, fuzzing,

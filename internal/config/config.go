@@ -13,6 +13,10 @@ import (
 )
 
 type Config struct {
+	Mode              string        `yaml:"mode"`
+	Storage           Storage       `yaml:"storage"`
+	Network           Network       `yaml:"network"`
+	Cluster           Cluster       `yaml:"cluster"`
 	Interface         string        `yaml:"interface"`
 	Destination       string        `yaml:"destination_ip"`
 	Port              uint16        `yaml:"port"`
@@ -34,13 +38,23 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{Interface: "eth0", Port: 53, Database: "/var/lib/dnsmon/stats.db", FlushInterval: 30 * time.Second,
+	return Config{Mode: "dns", Storage: Storage{Mode: "full", Retention: 24 * time.Hour, QueueMemoryMB: 8}, Network: Network{Capture: true, RuntimeDirectory: "/run/netmon", Rating: Rating{PacketsPerSecond: 1000, SYNPerSecond: 100, ScanPorts: 8, HalfLife: time.Hour}}, Cluster: Cluster{Listen: "0.0.0.0:9845", SyncInterval: 5 * time.Second}, Interface: "eth0", Port: 53, Database: "/var/lib/netmon/stats.db", FlushInterval: 30 * time.Second,
 		MaxPending: 10000, MaxDatabaseMB: 64, MaxWALMB: 16, SocketBufferMB: 2,
 		MaxTCPFlows: 1024, MaxTCPBytes: 8 << 20, MaxFragments: 256, MaxFragmentBytes: 2 << 20, ReassemblyTimeout: 2 * time.Minute, TCPIdleTimeout: 10 * time.Minute, HotCacheIPs: 8192, MaxActivityIPs: 10000, WriteRetryTimeout: 30 * time.Second}
 }
 
 func Load(path string, required bool) (Config, error) {
+	return loadDefaults(path, required, Default())
+}
+
+func LoadLegacy(path string) (Config, error) {
 	c := Default()
+	c.Database = "/var/lib/dnsmon/stats.db"
+	c.Network.RuntimeDirectory = "/run/dnsmon"
+	return loadDefaults(path, true, c)
+}
+
+func loadDefaults(path string, required bool, c Config) (Config, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) && !required {
 		return c, nil
@@ -101,5 +115,5 @@ func (c Config) Validate() error {
 	if c.WriteRetryTimeout < time.Second || c.WriteRetryTimeout > 5*time.Minute {
 		return errors.New("write_retry_timeout must be 1s..5m")
 	}
-	return nil
+	return c.validateNetwork()
 }

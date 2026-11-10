@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dnsmon/internal/live"
+	"netmon/internal/live"
 )
 
 const activityBuckets = 61 // 60 complete seconds plus the second in progress.

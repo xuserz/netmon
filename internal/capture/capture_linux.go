@@ -29,6 +29,12 @@ func htons(v uint16) uint16 {
 	return binary.NativeEndian.Uint16(b[:])
 }
 func Open(name string, port uint16, bufferMB int) (*Socket, error) {
+	return openFiltered(name, bufferMB, Filter(port))
+}
+func OpenNetwork(name string, bufferMB int) (*Socket, error) {
+	return openFiltered(name, bufferMB, NetworkFilter())
+}
+func openFiltered(name string, bufferMB int, filter []unix.SockFilter) (*Socket, error) {
 	iface, e := net.InterfaceByName(name)
 	if e != nil {
 		if errors.Is(e, unix.EPERM) || errors.Is(e, unix.EACCES) {
@@ -64,7 +70,6 @@ func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 		return nil, e
 	}
 
-	filter := Filter(port)
 	if e = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}); e != nil {
 		return nil, fmt.Errorf("attach BPF: %w", e)
 	}
@@ -134,4 +139,14 @@ func Filter(port uint16) []unix.SockFilter {
 		code[f.i].Jf = uint8(labels[f.f] - f.i - 1)
 	}
 	return code
+}
+
+// NetworkFilter admits incoming IPv4/IPv6 regardless of application or port.
+func NetworkFilter() []unix.SockFilter {
+	return []unix.SockFilter{
+		{Code: 0x20, K: 0xfffff004}, {Code: 0x15, K: unix.PACKET_OUTGOING, Jt: 4},
+		{Code: 0x20, K: 0xfffff000}, {Code: 0x15, K: unix.ETH_P_IP, Jt: 3},
+		{Code: 0x15, K: unix.ETH_P_IPV6, Jt: 2}, {Code: 0x06, K: 0},
+		{Code: 0x06, K: 0}, {Code: 0x06, K: 65575},
+	}
 }

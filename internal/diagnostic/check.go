@@ -13,8 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
+	"netmon/internal/cluster"
+	"netmon/internal/config"
+	"netmon/internal/live"
 )
 
 type Finding struct{ Level, Message string }
@@ -29,6 +30,20 @@ func Checks(c config.Config, startup bool) []Finding {
 		return out
 	}
 	add("OK", "configuration is valid")
+	if c.Cluster.Enabled {
+		if _, e := cluster.ReadKey(c.Cluster.KeyFile); e != nil {
+			add("FAIL", "cluster key: %v", e)
+		} else {
+			add("OK", "cluster key is valid; HTTPS/mutual TLS enabled")
+		}
+		if st, e := os.Stat(c.Cluster.KeyFile); e == nil {
+			if known, allowed := serviceAccess(st, 0400); known && !allowed {
+				add("FAIL", "service account cannot read cluster key %s", c.Cluster.KeyFile)
+			}
+		}
+		add("OK", "cluster listener %s; shared database %s", c.Cluster.Listen, cluster.Path(c.Database))
+	}
+
 	iface, e := net.InterfaceByName(c.Interface)
 	if e != nil {
 		if errors.Is(e, syscall.EPERM) || errors.Is(e, syscall.EACCES) {
@@ -63,7 +78,7 @@ func Checks(c config.Config, startup bool) []Finding {
 	} else {
 		add("OK", "database directory exists: %s", dir)
 		if known, allowed := serviceAccess(st, 0300); known && !allowed {
-			add("FAIL", "dnsmon user needs write and search permission on %s (check owner/group)", dir)
+			add("FAIL", "service account needs write and search permission on %s (check owner/group)", dir)
 		}
 		var fs syscall.Statfs_t
 		if err := syscall.Statfs(dir, &fs); err == nil {
@@ -82,7 +97,7 @@ func Checks(c config.Config, startup bool) []Finding {
 		}
 		add(level, "main database size: %.2f MiB", float64(st.Size())/(1<<20))
 		if known, allowed := serviceAccess(st, 0600); known && !allowed {
-			add("FAIL", "dnsmon user needs read/write access to %s", c.Database)
+			add("FAIL", "service account needs read/write access to %s", c.Database)
 		}
 	} else if os.IsNotExist(err) && startup {
 		add("OK", "database will be initialized on first start")
@@ -91,7 +106,7 @@ func Checks(c config.Config, startup bool) []Finding {
 	} else {
 		add("FAIL", "database: %v", err)
 	}
-	if !strings.HasPrefix(c.Database, "/var/lib/dnsmon/") {
+	if !strings.HasPrefix(c.Database, "/var/lib/netmon/") {
 		add("WARN", "custom DB path: verify systemd ReadWritePaths and directory ownership")
 	}
 	if !startup {
@@ -113,7 +128,7 @@ func Checks(c config.Config, startup bool) []Finding {
 				add("FAIL", "writer: %s", h.FlushError)
 			}
 		} else {
-			add("WARN", "live monitor unavailable; inspect journalctl -u dnsmon")
+			add("WARN", "live monitor unavailable; inspect journalctl -u netmon")
 		}
 	}
 	return out
@@ -130,7 +145,14 @@ func modeAllows(uid, gid uint32, mode os.FileMode, serviceUID uint32, groups map
 	return mode&(need>>6) == need>>6
 }
 func serviceAccess(info os.FileInfo, need os.FileMode) (bool, bool) {
-	account, e := user.Lookup("dnsmon")
+	accountName := os.Getenv("NETMON_SERVICE_USER")
+	if accountName == "" {
+		accountName = "netmon"
+	}
+	account, e := user.Lookup(accountName)
+	if os.Geteuid() != 0 && os.Getenv("NETMON_SERVICE_USER") == "" {
+		account, e = user.LookupId(strconv.Itoa(os.Geteuid()))
+	}
 	if e != nil {
 		return false, false
 	}

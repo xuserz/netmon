@@ -6,13 +6,13 @@ export CGO_ENABLED
 .PHONY: build static test check install uninstall clean
 build:
 	mkdir -p bin
-	$(GO) build -buildvcs=false -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o bin/dnsmon ./cmd/dnsmon
+	$(GO) build -buildvcs=false -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o bin/netmon ./cmd/netmon
 
 # Fully static Linux binary: bundled SQLite, no external libsqlite3 required.
 # On Debian/Ubuntu install musl-tools first.
 static:
 	mkdir -p bin
-	CC=musl-gcc $(GO) build -buildvcs=false -tags 'netgo osusergo' -trimpath -ldflags='-s -w -X main.version=$(VERSION) -linkmode external -extldflags "-static"' -o bin/dnsmon ./cmd/dnsmon
+	CC=musl-gcc $(GO) build -buildvcs=false -tags 'netgo osusergo' -trimpath -ldflags='-s -w -X main.version=$(VERSION) -linkmode external -extldflags "-static"' -o bin/netmon ./cmd/netmon
 
 test:
 	$(GO) test -race ./...

@@ -12,12 +12,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/cluster"
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/store"
 )
 
 type batcher struct {
+	cluster                 *cluster.Manager
 	mu                      sync.Mutex
 	active, inflight, spare *counterBatch
 	jobs                    chan *counterBatch
@@ -300,6 +302,16 @@ func (b *batcher) Snapshot(_ context.Context, req live.Request) live.Response {
 	h := b.healthLocked()
 	total := b.totals
 	b.mu.Unlock()
+	if b.cluster != nil {
+		status := b.cluster.Status()
+		h.ClusterEnabled = true
+		h.ClusterNode = status.Node
+		h.ClusterPeers = status.Peers
+		h.ClusterOnline = status.Online
+		h.ClusterError = status.Error
+		h.ClusterLastSync = status.LastSync
+		h.ClusterCatchingUp = status.CatchingUp
+	}
 	if req.Op == "health" {
 		return live.Response{Health: h, Totals: total, Source: "live"}
 	}
@@ -320,6 +332,15 @@ func (b *batcher) Snapshot(_ context.Context, req live.Request) live.Response {
 		r.Clients = nil
 	}
 
+	if b.cluster != nil && !req.Local {
+		view := b.cluster.View()
+		r.Cluster = true
+		r.Totals = view.Totals
+		if req.Sort != "rate" && req.Sort != "minute" {
+			r.Clients = view.Clients
+			r.SnapshotAt = view.At
+		}
+	}
 	r.Health = h
 	if req.Limit > 0 && len(r.Clients) > req.Limit {
 		r.Clients = r.Clients[:req.Limit]

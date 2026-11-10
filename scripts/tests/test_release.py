@@ -25,23 +25,23 @@ class ReleaseInstallTests(unittest.TestCase):
         self.marker = self.work / "installed"
         self.log = self.work / "downloads.jsonl"
         self.env = dict(os.environ, PATH=f"{self.fake_bin}:{os.environ['PATH']}",
-                        DNSMON_REPOSITORY="test-owner/dnsmon", DNSMON_VERSION="latest",
-                        DNSMON_TEST_MACHINE="x86_64", DNSMON_TEST_OS="Linux",
-                        DNSMON_TEST_UID="0", DNSMON_TEST_ASSETS=str(self.assets),
-                        DNSMON_TEST_MARKER=str(self.marker), DNSMON_TEST_LOG=str(self.log))
-        self.command("id", '#!/bin/sh\nprintf "%s\\n" "$DNSMON_TEST_UID"\n')
-        self.command("uname", '#!/bin/sh\ncase "$1" in -s) echo "$DNSMON_TEST_OS";; -m) echo "$DNSMON_TEST_MACHINE";; esac\n')
+                        NETMON_REPOSITORY="test-owner/netmon", NETMON_VERSION="latest",
+                        NETMON_TEST_MACHINE="x86_64", NETMON_TEST_OS="Linux",
+                        NETMON_TEST_UID="0", NETMON_TEST_ASSETS=str(self.assets),
+                        NETMON_TEST_MARKER=str(self.marker), NETMON_TEST_LOG=str(self.log))
+        self.command("id", '#!/bin/sh\nprintf "%s\\n" "$NETMON_TEST_UID"\n')
+        self.command("uname", '#!/bin/sh\ncase "$1" in -s) echo "$NETMON_TEST_OS";; -m) echo "$NETMON_TEST_MACHINE";; esac\n')
         self.command("curl", """#!/usr/bin/env python3
 import json, os, pathlib, shutil, sys
 args = sys.argv[1:]
 url = args[-1]
-with open(os.environ['DNSMON_TEST_LOG'], 'a') as f:
+with open(os.environ['NETMON_TEST_LOG'], 'a') as f:
     f.write(json.dumps(args) + '\\n')
 if '--head' in args:
-    print('https://github.com/test-owner/dnsmon/releases/tag/build-12-1-abcdef12', end='')
+    print('https://github.com/test-owner/netmon/releases/tag/build-12-1-abcdef12', end='')
 else:
     output = pathlib.Path(args[args.index('--output') + 1])
-    source = pathlib.Path(os.environ['DNSMON_TEST_ASSETS']) / url.rsplit('/', 1)[1]
+    source = pathlib.Path(os.environ['NETMON_TEST_ASSETS']) / url.rsplit('/', 1)[1]
     if not source.exists():
         sys.exit(22)
     shutil.copyfile(source, output)
@@ -56,10 +56,10 @@ else:
         path.chmod(0o755)
 
     def bundle(self, arch):
-        with tarfile.open(self.assets / f"dnsmon_linux_{arch}.tar.gz", "w:gz") as archive:
+        with tarfile.open(self.assets / f"netmon_linux_{arch}.tar.gz", "w:gz") as archive:
             files = {
-                "bin/dnsmon": b"bundled executable fixture\n",
-                "scripts/install.sh": b'#!/bin/sh\nset -eu\n[ -f "$1" ]\nprintf "%s\\n" "$1" > "$DNSMON_TEST_MARKER"\n',
+                "bin/netmon": b"bundled executable fixture\n",
+                "scripts/install.sh": b'#!/bin/sh\nset -eu\n[ -f "$1" ]\nprintf "%s\\n" "$1" > "$NETMON_TEST_MARKER"\n',
             }
             for name, content in files.items():
                 info = tarfile.TarInfo(name)
@@ -90,16 +90,16 @@ else:
         self.assertEqual(len(calls), 3)
         self.assertTrue(calls[0][-1].endswith("/releases/latest"))
         self.assertTrue(all("/download/build-12-1-abcdef12/" in call[-1] for call in calls[1:]))
-        self.assertIn("dnsmon_linux_amd64.tar.gz", calls[1][-1])
+        self.assertIn("netmon_linux_amd64.tar.gz", calls[1][-1])
 
     def test_explicit_release_and_arm64(self):
-        self.run_installer({"DNSMON_VERSION": "build-9-1-12345678", "DNSMON_TEST_MACHINE": "aarch64"})
+        self.run_installer({"NETMON_VERSION": "build-9-1-12345678", "NETMON_TEST_MACHINE": "aarch64"})
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual(len(calls), 2)
-        self.assertIn("/build-9-1-12345678/dnsmon_linux_arm64.tar.gz", calls[0][-1])
+        self.assertIn("/build-9-1-12345678/netmon_linux_arm64.tar.gz", calls[0][-1])
 
     def test_checksum_failure_never_runs_install(self):
-        with (self.assets / "dnsmon_linux_amd64.tar.gz").open("ab") as file:
+        with (self.assets / "netmon_linux_amd64.tar.gz").open("ab") as file:
             file.write(b"corruption")
         result = self.run_installer(success=False)
         self.assertIn("SHA-256 mismatch", result.stderr)
@@ -118,14 +118,14 @@ else:
         self.run_installer()
 
     def test_download_failure_never_runs_install(self):
-        (self.assets / "dnsmon_linux_amd64.tar.gz").unlink()
+        (self.assets / "netmon_linux_amd64.tar.gz").unlink()
         result = self.run_installer(success=False)
         self.assertIn("Could not download", result.stderr)
 
     def test_invalid_platform_repository_or_version(self):
-        for env in ({"DNSMON_TEST_MACHINE": "i686"}, {"DNSMON_TEST_OS": "Darwin"},
-                    {"DNSMON_REPOSITORY": "../repo"}, {"DNSMON_REPOSITORY": "owner/repo/extra"},
-                    {"DNSMON_VERSION": "../bad"}, {"DNSMON_TEST_UID": "1000"}):
+        for env in ({"NETMON_TEST_MACHINE": "i686"}, {"NETMON_TEST_OS": "Darwin"},
+                    {"NETMON_REPOSITORY": "../repo"}, {"NETMON_REPOSITORY": "owner/repo/extra"},
+                    {"NETMON_VERSION": "../bad"}, {"NETMON_TEST_UID": "1000"}):
             with self.subTest(env=env):
                 self.run_installer(env, success=False)
         self.assertFalse(self.log.exists())
@@ -145,7 +145,7 @@ else:
         for name in ("install.sh", "install-release.sh"):
             shutil.copyfile(ROOT / "scripts" / name, scripts / name)
         (project / "bin").mkdir()
-        binary = project / "bin/dnsmon"
+        binary = project / "bin/netmon"
         binary.write_text("#!/bin/sh\nexit 99\n")
         binary.chmod(0o755)
         self.run_installer(script=scripts / "install.sh", args=("--release",))
@@ -164,9 +164,9 @@ class PackagingTests(unittest.TestCase):
             scripts = root / "scripts"
             scripts.mkdir()
             shutil.copyfile(ROOT / "scripts/package-release.sh", scripts / "package-release.sh")
-            inputs = ["bin/dnsmon", "dnsmon.yaml", "packaging/dnsmon.service", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md",
-                      "scripts/install.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
-                      "docs/configuration.md", "docs/operations.md", "docs/development.md"]
+            inputs = ["bin/netmon", "netmon.yaml", "packaging/netmon.service", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md",
+                      "scripts/install.sh", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
+                      "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md"]
             for name in inputs:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ class PackagingTests(unittest.TestCase):
             result = subprocess.run(["sh", str(scripts / "package-release.sh"), "amd64", str(root / "dist")],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with tarfile.open(root / "dist/dnsmon_linux_amd64.tar.gz") as archive:
+            with tarfile.open(root / "dist/netmon_linux_amd64.tar.gz") as archive:
                 self.assertEqual(sorted(archive.getnames()), sorted(inputs))
 
 

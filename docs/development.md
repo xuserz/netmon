@@ -17,7 +17,7 @@ libpcap is not required. `CGO_ENABLED=0` is not supported by this implementation
 
 ```sh
 make build
-./bin/dnsmon version
+./bin/netmon version
 ```
 
 Regular builds require a compatible libc on the target system. Build on the same
@@ -28,10 +28,10 @@ For a static Linux executable:
 ```sh
 sudo apt install musl-tools
 make static VERSION=local
-file bin/dnsmon
+file bin/netmon
 ```
 
-Both build targets accept `VERSION`; the value is embedded in `dnsmon version`.
+Both build targets accept `VERSION`; the value is embedded in `netmon version`.
 Release bundles include the binary, configuration, systemd unit, installers, and
 README, documentation, MIT License, third-party notices, changelog, and
 contribution guide. Package a binary built for the selected architecture with:
@@ -63,9 +63,16 @@ when a migration reaches the SQLite page limit. Tests also cover SQLite fix
 version, export isolation and cleanup, SIGKILL recovery, bounded activity
 windows/eviction, and a health heartbeat during a blocked writer.
 
+Network-mode tests additionally cover deterministic score tiers/decay, bounded
+queues, old ACKs racing with coalesced updates, eviction without count loss,
+retention/replay, transaction rollback, and policy mismatch. Process tests start
+RAM-only senders and storage replicas, send non-DNS traffic, interrupt storage,
+restart replicas, and verify delivered counters, reasons, CSV, and no sender DB.
+
 Fuzz the packet and DNS parsers separately:
 
 ```sh
+go test ./internal/observation -fuzz FuzzNetworkDecode -fuzztime 10s
 go test ./internal/packet -fuzz FuzzFeed -fuzztime 10s
 go test ./internal/packet -fuzz FuzzDNS -fuzztime 10s
 go test ./internal/capture -fuzz FuzzRingFrame -fuzztime 10s
@@ -73,7 +80,7 @@ go test ./internal/capture -fuzz FuzzRingFrame -fuzztime 10s
 
 ### Network integration
 
-Set `DNSMON_INTEGRATION=1` to enable real packet-socket tests. They require
+Set `NETMON_INTEGRATION=1` to enable real packet-socket tests. They require
 `CAP_NET_RAW`; bridge tests also require network namespace and link-management
 privileges. Without the required permissions, tests report explicit skips.
 
@@ -83,8 +90,8 @@ isolated network namespace:
 ```sh
 unshare --user --map-root-user --net sh -c '
   ip link set lo up
-  DNSMON_INTEGRATION=1 go test -race -count=1 ./...
-  DNSMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -v
+  NETMON_INTEGRATION=1 go test -race -count=1 ./...
+  NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -v
 '
 ```
 
@@ -95,7 +102,11 @@ once with the original source IP. It models bridge traversal without requiring
 Docker or changing host firewall rules. Python recovery tests run the actual
 binary, kill/restart it after a confirmed flush, and block SQLite while feeding
 a burst of packets. They verify live diagnostics, bounded buffers, recovery,
-and preservation of confirmed counters.
+and preservation of confirmed counters. Cluster integration tests run three
+real monitors, verify shared and local scopes, discover peers, and restart an
+offline member without duplicating its historical contribution. Go tests also
+cover transitive/idempotent merge, page boundaries, cursor rollback, TLS key
+isolation, and change tracking while cluster networking is disabled.
 
 ### Load tests
 
@@ -108,7 +119,7 @@ go test -v ./internal/monitor -run TestLoad
 go test ./internal/monitor -run '^$' -bench BenchmarkPipeline -benchmem
 ```
 
-For paced traffic to a separate dnsmon process, build the binary and use an
+For paced traffic to a separate netmon process, build the binary and use an
 isolated loopback network:
 
 ```sh
@@ -143,10 +154,11 @@ automatically shrink to the fresh-layout size.
 
 | Component | Location |
 | --- | --- |
-| CLI and command handling | `cmd/dnsmon` |
+| CLI and command handling | `cmd/netmon` |
 | PACKET_MMAP TPACKET_V3 ring and classic BPF filter | `internal/capture` |
 | DNS validation, TCP and IP reassembly | `internal/packet` |
 | Capture loop and bounded asynchronous writer | `internal/monitor` |
+| Peer replication, TLS, membership, and per-origin merges | `internal/cluster` |
 | SQLite storage and live-overlay queries | `internal/store` |
 | Read-only Unix diagnostic protocol | `internal/live` |
 | Terminal rendering and keyboard handling | `internal/ui` |
@@ -177,12 +189,13 @@ go test -v ./internal/store -run TestLayoutFootprint
 ```
 
 Preserve deterministic counting, bounded memory, and the single-row-per-client
-storage model when changing the code. Domains and packet contents must not be
+storage model when changing the code. Optional cluster metadata is documented
+in the cluster guide; do not add request history. Domains and packet contents must not be
 persisted. Add regression tests for parser, concurrency, or lifecycle changes.
 
 ## Releases
 
-The [GitHub Actions workflow](https://github.com/xuserz/dnsmon/blob/main/.github/workflows/release.yml) runs on pushes,
+The [GitHub Actions workflow](https://github.com/xuserz/netmon/blob/main/.github/workflows/release.yml) runs on pushes,
 pull requests, and manual dispatch. It verifies dependencies, runs checks and
 integration tests, then builds and tests static binaries on native amd64 and
 arm64 runners.
@@ -194,10 +207,25 @@ Both architecture bundles must pass before publication. Release versions use
 
 Published assets:
 
-- `dnsmon_linux_amd64.tar.gz`
-- `dnsmon_linux_arm64.tar.gz`
+- `netmon_linux_amd64.tar.gz`
+- `netmon_linux_arm64.tar.gz`
 - `install-release.sh`
 - `SHA256SUMS`
 
 Only the publishing job requests `contents: write`, using GitHub's built-in
 token. No VPS credentials or SSH deployment are involved.
+
+### Network-mode process and load tests
+
+Run only inside an isolated network namespace, with the built binary:
+
+```sh
+sudo unshare --net sh -c 'ip link set lo up; NETMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_network.py -v'
+sudo unshare --net sh -c 'ip link set lo up; python3 scripts/loadtest.py --mode network --rate 5000 --seconds 3 --clients 2000 --live --burst-size 250'
+```
+
+The network load test uses non-DNS UDP payloads and checks packet counts, unique
+IPs, kernel drops, concurrent dashboard snapshots, CPU, and RSS. DNS-mode load
+figures do not establish network-mode performance; neither is a VPS capacity
+guarantee. Forward nodes can lose unacknowledged RAM; tests deliberately verify
+outage/recovery separately from persistent storage replication.

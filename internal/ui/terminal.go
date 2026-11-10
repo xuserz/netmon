@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"dnsmon/internal/live"
+	"netmon/internal/live"
 	"golang.org/x/sys/unix"
 )
 
@@ -23,6 +23,7 @@ func IsTerminal(f *os.File) bool {
 }
 
 type Options struct {
+	Network  bool
 	In, Out  *os.File
 	Interval time.Duration
 	Version  string
@@ -140,7 +141,7 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 		}
 	}()
 	defer func() { cancel(); workers.Wait() }()
-	state := State{Version: opt.Version, Color: opt.Color, Sort: opt.Sort}
+	state := State{Version: opt.Version, Color: opt.Color, Sort: opt.Sort, Data: live.Response{Network: opt.Network}}
 	if state.Sort == "" {
 		state.Sort = "total"
 	}
@@ -245,6 +246,21 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 			case "refresh":
 				request()
 			case "sort":
+				if state.Data.Network {
+					switch state.Sort {
+					case "score":
+						state.Sort = "total"
+					case "total":
+						state.Sort = "bytes"
+					case "bytes":
+						state.Sort = "syn"
+					default:
+						state.Sort = "score"
+					}
+					state.Offset = 0
+					request()
+					break
+				}
 				switch state.Sort {
 				case "total":
 					state.Sort = "rate"

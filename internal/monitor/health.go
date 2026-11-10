@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"dnsmon/internal/packet"
+	"netmon/internal/packet"
 	"golang.org/x/sys/unix"
 )
 

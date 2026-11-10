@@ -1,6 +1,6 @@
 [Unit]
-Description=Lightweight DNS client monitor
-Documentation=file:/usr/share/doc/dnsmon/README.md
+Description=Lightweight network activity monitor
+Documentation=file:/usr/share/doc/netmon/README.md
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=300
@@ -8,15 +8,17 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-User=dnsmon
-Group=dnsmon
-ExecStartPre=/usr/local/bin/dnsmon --config /etc/dnsmon/config.yaml check --startup
-ExecStart=/usr/local/bin/dnsmon --config /etc/dnsmon/config.yaml run
+User=netmon
+Group=netmon
+ExecStartPre=/usr/local/bin/netmon --config /etc/netmon/config.yaml check --startup
+ExecStart=/usr/local/bin/netmon --config /etc/netmon/config.yaml run
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s
-StateDirectory=dnsmon
+StateDirectory=netmon
 StateDirectoryMode=0750
+RuntimeDirectory=netmon
+RuntimeDirectoryMode=0750
 UMask=0027
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW

@@ -9,9 +9,9 @@ import (
 	"os/exec"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/diagnostic"
-	"dnsmon/internal/live"
+	"netmon/internal/config"
+	"netmon/internal/diagnostic"
+	"netmon/internal/live"
 )
 
 func check(c config.Config, args []string, out, errOut io.Writer) error {
@@ -45,11 +45,14 @@ func status(c config.Config, out, errOut io.Writer) error {
 	r, e := live.Fetch(ctx, c.Database, live.Request{Op: "health"})
 	if e == nil {
 		h := r.Health
-		fmt.Fprintf(out, "DNSMON · RUNNING · PID %d\nInterface: %s  Port: %d\nUptime: %s\nCaptured packets: %d\nCounted this run: %d\nKernel drops: %d\n", h.PID, h.Interface, h.Port, time.Since(h.Started).Truncate(time.Second), h.Received, h.Counted, h.KernelDrops)
+		fmt.Fprintf(out, "NETMON · RUNNING · PID %d\nInterface: %s  Port: %d\nUptime: %s\nCaptured packets: %d\nCounted this run: %d\nKernel drops: %d\n", h.PID, h.Interface, h.Port, time.Since(h.Started).Truncate(time.Second), h.Received, h.Counted, h.KernelDrops)
 		fmt.Fprintf(out, "Last request: %s\nLast successful flush: %s\nLast flush duration: %s\nPending: %d requests / %d IP slots\nWriter busy: %t  Backpressure waits: %d\n", timestamp(h.LastRequest), timestamp(h.LastFlush), h.FlushDuration, h.PendingRequests, h.PendingIPs, h.Writing, h.Backpressure)
 		fmt.Fprintf(out, "TCP: %d active flows / %d buffered bytes\nFragments: %d sets / %d buffered bytes\nParser: %+v\nReceive ring: requested=%d actual=%d\nRSS: %.1f MiB\n", h.TCPFlows, h.TCPBytes, h.Fragments, h.FragmentBytes, h.Parser, h.RequestedBuffer, h.ActualBuffer, float64(h.RSSBytes)/(1<<20))
 		fmt.Fprintf(out, "Capture: %s; lag=%s\nWriter retries: %d\n", h.CaptureMode, h.CaptureLag.Round(time.Millisecond), h.WriteRetries)
 		fmt.Fprintf(out, "Capture sample age: %s\nBlocked for: %s  Oldest pending: %s\nActivity cache: %d/%d IPs; evictions=%d\nSQLite: %s\n", time.Since(h.CaptureUpdated).Round(time.Millisecond), h.BlockedFor.Round(time.Millisecond), h.PendingAge.Round(time.Millisecond), h.ActivityEntries, h.ActivityLimit, h.ActivityEvictions, h.SQLiteVersion)
+		if h.ClusterEnabled {
+			fmt.Fprintf(out, "Cluster node: %s\nPeers online: %d/%d\nLast exchange: %s\nCatching up: %t\nCluster error: %s\n", h.ClusterNode, h.ClusterOnline, h.ClusterPeers, timestamp(h.ClusterLastSync), h.ClusterCatchingUp, h.ClusterError)
+		}
 		if h.CaptureError != "" {
 			return errors.New(h.CaptureError)
 		}
@@ -59,11 +62,11 @@ func status(c config.Config, out, errOut io.Writer) error {
 		return nil
 	}
 	fmt.Fprintln(out, "Live capture unavailable; systemd state:")
-	cmd := exec.CommandContext(ctx, "systemctl", "show", "dnsmon.service", "--no-pager", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus")
+	cmd := exec.CommandContext(ctx, "systemctl", "show", "netmon.service", "--no-pager", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus")
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	stateErr := cmd.Run()
-	fmt.Fprintln(out, "Details: journalctl -u dnsmon -b -n 30 --no-pager -o cat")
+	fmt.Fprintln(out, "Details: journalctl -u netmon -b -n 30 --no-pager -o cat")
 	if stateErr != nil {
 		return stateErr
 	}

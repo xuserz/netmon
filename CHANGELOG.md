@@ -8,6 +8,16 @@ tags retroactively.
 
 ### Changed
 
+- Rename dnsmon to netmon: executable, Go module/package paths, config/unit names,
+  install paths, documentation, environment variables, and CI/release archives.
+- Preserve database formats and authenticated cluster identities across the
+  rename; support migration from standard dnsmon installations with config/path
+  preservation, service-state transfer, and startup failure rollback.
+
+- Fresh-install configurations now select network activity monitoring on all
+  incoming ports. Existing configurations without `mode` retain DNS accounting;
+  network counters use a separate database and do not reinterpret DNS totals.
+
 - Update go-sqlite3 to v1.14.53 (SQLite 3.54.1), including the WAL-reset fix.
 - Build CSV exports from private incremental backup snapshots with bounded
   deadlines and cleanup, keeping CSV reads off the live WAL.
@@ -30,6 +40,27 @@ tags retroactively.
   longer limited by `net.core.rmem_max`.
 
 ### Added
+
+- Per-source incoming packet, byte, TCP/SYN, UDP, and ICMP counters with a
+  deterministic 0–100 suspicion score, signal explanations, and time decay.
+- Network storage roles: full replicas with retained minute observations, or
+  bounded RAM-only forwarding without a local statistics database or spool.
+- Authenticated network replication with idempotent observation snapshots,
+  durable receive cursors, automatic exclusion of replication TCP ports,
+  queue/loss diagnostics, and storage-only receivers.
+- Network terminal rankings by suspicion, packets, bytes, and SYN; per-IP risk
+  details and consistent CSV export. Configurable retention and rating policy.
+- Process regressions for RAM forwarding, replica recovery and DNS isolation;
+  counter replay/expiry/eviction, score/decay, queue bounds, and parser tests.
+
+- Optional peer-to-peer clusters: every enabled node stores shared cumulative
+  counters and exchanges bounded change pages over mutually authenticated TLS.
+- Durable origin IDs and receive cursors, coalesced per-IP source feeds,
+  transitive/idempotent counter merges, and seed-based peer discovery.
+- `netmon cluster keygen`, `netmon nodes`, shared inspection/export defaults,
+  `--local` overrides, and cluster status in the terminal dashboard.
+- Three-node network/process regressions covering real capture, restarts,
+  disconnected members, pagination, and authentication failures.
 
 - Per-IP activity rankings: `top --sort rate` / `--sort minute`, `s` to cycle,
   and a bounded volatile cache controlled by `max_activity_ips`.

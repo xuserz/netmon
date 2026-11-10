@@ -13,17 +13,17 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/store"
 )
 
 // Model Docker's veth/bridge path without installing Docker or altering the
 // host network/firewall. A packet traverses an ingress veth and its bridge;
 // binding the monitor to the ingress must count exactly once, with the peer IP.
 func TestLiveBridgeIngressCountsOnce(t *testing.T) {
-	if os.Getenv("DNSMON_INTEGRATION") != "1" || os.Geteuid() != 0 {
-		t.Skip("requires root in a user namespace and DNSMON_INTEGRATION=1")
+	if os.Getenv("NETMON_INTEGRATION") != "1" || os.Geteuid() != 0 {
+		t.Skip("requires root in a user namespace and NETMON_INTEGRATION=1")
 	}
 	for _, tool := range []string{"unshare", "ip", "python3"} {
 		if _, e := exec.LookPath(tool); e != nil {
@@ -31,7 +31,7 @@ func TestLiveBridgeIngressCountsOnce(t *testing.T) {
 		}
 	}
 	ownNS, _ := os.Readlink("/proc/self/ns/net")
-	if os.Getenv("DNSMON_BRIDGE_CHILD") != "1" {
+	if os.Getenv("NETMON_BRIDGE_CHILD") != "1" {
 		executable, e := os.Executable()
 		if e != nil {
 			t.Fatal(e)
@@ -39,7 +39,7 @@ func TestLiveBridgeIngressCountsOnce(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "unshare", "--net", executable, "-test.run=^TestLiveBridgeIngressCountsOnce$", "-test.v")
-		cmd.Env = append(os.Environ(), "DNSMON_BRIDGE_CHILD=1", "DNSMON_PARENT_NETNS="+ownNS)
+		cmd.Env = append(os.Environ(), "NETMON_BRIDGE_CHILD=1", "NETMON_PARENT_NETNS="+ownNS)
 		output, e := cmd.CombinedOutput()
 		if e != nil {
 			t.Fatalf("isolated bridge test: %v\n%s", e, output)
@@ -47,7 +47,7 @@ func TestLiveBridgeIngressCountsOnce(t *testing.T) {
 		t.Log(string(output))
 		return
 	}
-	if parent := os.Getenv("DNSMON_PARENT_NETNS"); parent == "" || parent == ownNS {
+	if parent := os.Getenv("NETMON_PARENT_NETNS"); parent == "" || parent == ownNS {
 		t.Fatal("refusing to create test links outside a new network namespace")
 	}
 	runIP := func(args ...string) {

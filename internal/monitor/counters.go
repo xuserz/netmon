@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dnsmon/internal/store"
+	"netmon/internal/store"
 )
 
 var errSnapshotContended = errors.New("counter snapshot changed during sampling")

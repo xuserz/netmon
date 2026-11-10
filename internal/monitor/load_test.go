@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/store"
+	"netmon/internal/config"
+	"netmon/internal/store"
 )
 
 // A deterministic full parser/aggregation/SQLite workload. Packet generation is

@@ -13,16 +13,16 @@ import (
 	"testing"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
-	"dnsmon/internal/store"
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/store"
 )
 
 // End-to-end native AF_PACKET + BPF + parser + async SQLite, on ephemeral
 // loopback ports. CI runs it as root; local unprivileged runs may skip it.
 func TestLivePacketPipeline(t *testing.T) {
-	if os.Getenv("DNSMON_INTEGRATION") != "1" {
-		t.Skip("set DNSMON_INTEGRATION=1 and grant CAP_NET_RAW")
+	if os.Getenv("NETMON_INTEGRATION") != "1" {
+		t.Skip("set NETMON_INTEGRATION=1 and grant CAP_NET_RAW")
 	}
 	for _, family := range []string{"4", "6"} {
 		t.Run("IPv"+family, func(t *testing.T) {

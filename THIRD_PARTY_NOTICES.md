@@ -1,6 +1,6 @@
 # Third-party notices
 
-dnsmon source is covered by [LICENSE](LICENSE). Binaries include the following
+netmon source is covered by [LICENSE](LICENSE). Binaries include the following
 components under their own terms. Module versions are pinned in go.mod; musl is
 used by static builds. The upstream license notices are reproduced below.
 

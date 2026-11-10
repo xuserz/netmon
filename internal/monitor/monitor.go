@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"dnsmon/internal/capture"
-	"dnsmon/internal/config"
-	"dnsmon/internal/live"
-	"dnsmon/internal/packet"
-	"dnsmon/internal/store"
+	"netmon/internal/capture"
+	"netmon/internal/cluster"
+	"netmon/internal/config"
+	"netmon/internal/live"
+	"netmon/internal/packet"
+	"netmon/internal/store"
 	"golang.org/x/sys/unix"
 )
 
@@ -39,11 +40,20 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("database: %w", e)
 	}
 	defer db.Close()
+	var federation *cluster.Manager
+	if c.Cluster.Enabled {
+		federation, e = cluster.New(ctx, c, db)
+		if e != nil {
+			return fmt.Errorf("cluster: %w", e)
+		}
+		defer federation.Close()
+	}
 	b, e := newBatcher(c, db)
 	if e != nil {
 		return e
 	}
 	defer b.Close()
+	b.cluster = federation
 	sock, e := capture.Open(c.Interface, c.Port, c.SocketBufferMB)
 	if e != nil {
 		return e

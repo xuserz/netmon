@@ -16,25 +16,29 @@ import (
 	"syscall"
 	"time"
 
-	"dnsmon/internal/config"
-	"dnsmon/internal/monitor"
-	"dnsmon/internal/store"
+	"netmon/internal/cluster"
+	"netmon/internal/config"
+	"netmon/internal/monitor"
+	"netmon/internal/store"
 )
 
 var version = "dev"
 
-const usage = `dnsmon — lightweight Linux DNS client counters
-Usage: dnsmon [--config /etc/dnsmon/config.yaml] [--db /path/stats.db] COMMAND
+const usage = `netmon — lightweight Linux network activity monitor
+Usage: netmon [--config /etc/netmon/config.yaml] [--db /path/stats.db] COMMAND
 
   run                  Run the foreground monitor (used by systemd)
   top [-n 20]          Live, colorful terminal dashboard (q quits)
-  top --once           Print one committed snapshot; pipes use this automatically
+  top --once           Print one snapshot; pipes use this automatically
   show IP              One IPv4/IPv6 address
   stats                Global totals
-  list                 All clients, ordered by count
+  list                 All saved source IPs (network: temporary snapshot)
   export --csv FILE    Export a consistent snapshot to CSV
+  nodes                Cluster peers and synchronization status
+  cluster keygen       Generate a shared cluster key
   status               Service state and live capture diagnostics
   check [--startup]    Read-only configuration and runtime checks
+  migrate-config       Convert an old dnsmon config without changing data paths
   version              Print version
 
 Read commands never start a capture. Global flags may also follow COMMAND.
@@ -42,12 +46,12 @@ Read commands never start a capture. Global flags may also follow COMMAND.
 
 func main() {
 	if e := run(os.Args[1:], os.Stdout, os.Stderr); e != nil {
-		fmt.Fprintln(os.Stderr, "dnsmon:", e)
+		fmt.Fprintln(os.Stderr, "netmon:", e)
 		os.Exit(1)
 	}
 }
 func run(args []string, out, errOut io.Writer) error {
-	path := "/etc/dnsmon/config.yaml"
+	path := "/etc/netmon/config.yaml"
 	dbPath := ""
 	explicit := false
 	var rest []string
@@ -88,10 +92,17 @@ func run(args []string, out, errOut io.Writer) error {
 		return nil
 	}
 
+	if command == "migrate-config" {
+		return migrateConfig(rest, out, errOut)
+	}
+
+	if command == "cluster" && len(rest) > 0 && rest[0] == "keygen" {
+		return clusterKeygen(rest[1:], out, errOut)
+	}
 	switch command {
-	case "run", "top", "show", "stats", "list", "export", "status", "check":
+	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes":
 	default:
-		return fmt.Errorf("unknown command %q; use dnsmon help", command)
+		return fmt.Errorf("unknown command %q; use netmon help", command)
 	}
 	c, e := config.Load(path, explicit || command == "run" || command == "check")
 	if e != nil {
@@ -101,12 +112,22 @@ func run(args []string, out, errOut io.Writer) error {
 		fmt.Fprintf(errOut, "Configuration error: %v\n", e)
 		c = config.Default()
 	}
+	configuredDatabase := c.Database
 	if dbPath != "" {
 		p, err := filepath.Abs(dbPath)
 		if err != nil {
 			return err
 		}
 		c.Database = p
+	}
+	if c.Mode == "network" {
+		return networkCommand(command, rest, c, out, errOut)
+	}
+	if command == "nodes" {
+		if len(rest) > 0 {
+			return errors.New("nodes takes no arguments")
+		}
+		return nodes(c, out)
 	}
 	if command == "status" {
 		if len(rest) > 0 {
@@ -128,6 +149,7 @@ func run(args []string, out, errOut io.Writer) error {
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
+	localOnly := fs.Bool("local", false, "read this server only instead of shared cluster totals")
 	limit := 20
 	sort := "total"
 	once, watch, noColor := false, false, false
@@ -165,6 +187,12 @@ func run(args []string, out, errOut io.Writer) error {
 	if command == "export" && csvPath == "" {
 		return errors.New("export requires --csv FILE")
 	}
+	readDB := c.Database
+	shared := c.Cluster.Enabled && !*localOnly && dbPath == ""
+	requestLocal := *localOnly || dbPath != ""
+	if shared {
+		readDB = cluster.Path(c.Database)
+	}
 	if command == "top" {
 		if sort != "total" && sort != "rate" && sort != "minute" {
 			return errors.New("--sort must be total, rate, or minute")
@@ -176,13 +204,13 @@ func run(args []string, out, errOut io.Writer) error {
 			return errors.New("--interval must be 250ms..1m")
 		}
 		if !once && (watch || terminalOutput(out)) {
-			return interactiveTop(out, c.Database, limit, interval, noColor, sort)
+			return interactiveTop(out, c.Database, limit, interval, noColor, sort, readDB, requestLocal, shared)
 		}
 	}
 	if command == "top" && sort != "total" {
 		return errors.New("rate/minute ranking requires an interactive live top")
 	}
-	s, e := store.Open(c.Database, false, 0, 0)
+	s, e := store.Open(readDB, false, 0, 0)
 	if e != nil {
 		return fmt.Errorf("open statistics (has the service initialized the database?): %w", e)
 	}
@@ -195,7 +223,7 @@ func run(args []string, out, errOut io.Writer) error {
 		defer stop()
 		ctx, cancel := context.WithTimeout(ctx, exportTimeout)
 		defer cancel()
-		return export(ctx, s, c.Database, csvPath, out)
+		return export(ctx, s, readDB, csvPath, out, c.Database, cluster.Path(c.Database), configuredDatabase, cluster.Path(configuredDatabase))
 	}
 	tx, e := s.DB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if e != nil {

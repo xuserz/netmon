@@ -13,7 +13,7 @@ import (
 )
 
 func TestCrashRecoveryHelper(t *testing.T) {
-	path := os.Getenv("DNSMON_CRASH_HELPER")
+	path := os.Getenv("NETMON_CRASH_HELPER")
 	if path == "" {
 		t.Skip("subprocess helper")
 	}
@@ -39,7 +39,7 @@ func TestCrashRecoveryHelper(t *testing.T) {
 func TestSIGKILLPreservesCommittedCountersAndRollsBackUncommittedWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.db")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCrashRecoveryHelper$")
-	cmd.Env = append(os.Environ(), "DNSMON_CRASH_HELPER="+path)
+	cmd.Env = append(os.Environ(), "NETMON_CRASH_HELPER="+path)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, e := cmd.StdoutPipe()

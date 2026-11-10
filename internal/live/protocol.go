@@ -12,8 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"dnsmon/internal/packet"
-	"dnsmon/internal/store"
+	"netmon/internal/observation"
+	"netmon/internal/packet"
+	"netmon/internal/store"
 )
 
 type ActivityClient struct {
@@ -24,6 +25,22 @@ type ActivityClient struct {
 }
 
 type Health struct {
+	Mode              string          `json:"mode"`
+	StorageMode       string          `json:"storage_mode"`
+	QueueBytes        int             `json:"queue_bytes"`
+	QueueLimit        int             `json:"queue_limit"`
+	QueueRejected     uint64          `json:"queue_rejected"`
+	DiscardedSamples  uint64          `json:"discarded_samples"`
+	DeliveryAcks      uint64          `json:"delivery_acks"`
+	MalformedPackets  uint64          `json:"malformed_packets"`
+	RetentionSeconds  int64           `json:"retention_seconds"`
+	ClusterEnabled    bool            `json:"cluster_enabled"`
+	ClusterNode       string          `json:"cluster_node"`
+	ClusterPeers      int             `json:"cluster_peers"`
+	ClusterOnline     int             `json:"cluster_online"`
+	ClusterError      string          `json:"cluster_error,omitempty"`
+	ClusterLastSync   time.Time       `json:"cluster_last_sync"`
+	ClusterCatchingUp bool            `json:"cluster_catching_up"`
 	SQLiteVersion     string          `json:"sqlite_version"`
 	CaptureUpdated    time.Time       `json:"capture_updated"`
 	CaptureError      string          `json:"capture_error,omitempty"`
@@ -63,20 +80,27 @@ type Health struct {
 	Parser            packet.Counters `json:"parser"`
 }
 type Request struct {
+	IP    string `json:"ip,omitempty"`
+	Local bool   `json:"local,omitempty"`
 	Op    string `json:"op"`
 	Sort  string `json:"sort,omitempty"`
 	Limit int    `json:"limit,omitempty"`
 }
 type Response struct {
-	Sort            string           `json:"sort,omitempty"`
-	Activity        []ActivityClient `json:"activity,omitempty"`
-	ActivityPartial bool             `json:"activity_partial"`
-	Health          Health           `json:"health"`
-	Totals          store.Totals     `json:"totals"`
-	Clients         []store.Client   `json:"clients,omitempty"`
-	Error           string           `json:"error,omitempty"`
-	Source          string           `json:"source"`
-	SnapshotAt      time.Time        `json:"snapshot_at"`
+	Network         bool               `json:"network"`
+	NetworkIPs      []observation.IP   `json:"network_ips,omitempty"`
+	NetworkTotals   observation.Totals `json:"network_totals"`
+	Partial         bool               `json:"partial"`
+	Cluster         bool               `json:"cluster"`
+	Sort            string             `json:"sort,omitempty"`
+	Activity        []ActivityClient   `json:"activity,omitempty"`
+	ActivityPartial bool               `json:"activity_partial"`
+	Health          Health             `json:"health"`
+	Totals          store.Totals       `json:"totals"`
+	Clients         []store.Client     `json:"clients,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Source          string             `json:"source"`
+	SnapshotAt      time.Time          `json:"snapshot_at"`
 }
 
 func Path(db string) string { return db + ".sock" }
@@ -162,11 +186,11 @@ func Serve(db string, handler func(context.Context, Request) Response) (*Server,
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				if req.Op != "health" && req.Op != "top" {
+				if req.Op != "health" && req.Op != "top" && req.Op != "show" {
 					json.NewEncoder(conn).Encode(Response{Error: "unknown operation"})
 					return
 				}
-				if req.Sort != "" && req.Sort != "total" && req.Sort != "rate" && req.Sort != "minute" {
+				if req.Sort != "" && req.Sort != "total" && req.Sort != "rate" && req.Sort != "minute" && req.Sort != "score" && req.Sort != "bytes" && req.Sort != "syn" {
 					json.NewEncoder(conn).Encode(Response{Error: "sort must be total, rate, or minute"})
 					return
 				}

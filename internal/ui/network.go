@@ -1,0 +1,94 @@
+package ui
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+func renderNetwork(s State, width, height int) string {
+	width = max(1, width)
+	height = max(1, height)
+	if width < 50 || height < 12 {
+		lines := []string{"NETWORK MONITOR · enlarge terminal", "Need at least 50×12; q quits"}
+		for len(lines) < height {
+			lines = append(lines, "")
+		}
+		for i := range lines {
+			lines[i] = pad(lines[i], width)
+		}
+		return strings.Join(lines[:height], "\r\n")
+	}
+	inner := width - 2
+	var lines []string
+	box := func(text string, color int) {
+		lines = append(lines, paint("│", 60, s.Color)+paint(pad(text, inner), color, s.Color)+paint("│", 60, s.Color))
+	}
+	edge := func(title string) {
+		title = cut(" "+title+" ", inner)
+		lines = append(lines, paint("├"+title+strings.Repeat("─", inner-len([]rune(title)))+"┤", 60, s.Color))
+	}
+	title := cut(" netmon · NETWORK · "+s.Version+" ", inner)
+	lines = append(lines, paint("╭"+title+strings.Repeat("─", inner-len([]rune(title)))+"╮", 81, s.Color))
+	h := s.Data.Health
+	t := s.Data.NetworkTotals
+	scope := "SAVED NETWORK OBSERVATIONS"
+	if h.StorageMode == "forward" {
+		scope = "FORWARD · RAM SAMPLE"
+	} else if s.Data.Partial {
+		scope = "LOCAL RAM SAMPLE"
+	}
+	if s.Data.Source == "stored" {
+		scope = "STORED NETWORK OBSERVATIONS"
+	}
+	if s.Paused {
+		scope = "PAUSED"
+	} else if !s.Data.SnapshotAt.IsZero() && time.Since(s.Data.SnapshotAt) > 3*time.Second {
+		scope += " · STALE"
+	}
+	box(" "+scope+"   "+h.Interface, 120)
+	box(fmt.Sprintf(" Packets %s   IPs %s   Bytes %s", number(strconv.FormatInt(t.Packets, 10)), number(strconv.FormatInt(t.IPs, 10)), bytes(uint64(max(int64(0), t.Bytes)))), 255)
+	box(fmt.Sprintf(" Local %.1f packets/s   CPU %.1f%%   RAM %s", s.Rate, s.CPU, bytes(h.RSSBytes)), 153)
+	box(fmt.Sprintf(" Kernel drops %d   Malformed %d   RAM queue %.1f/%.1f MiB", h.KernelDrops, h.MalformedPackets, float64(h.QueueBytes)/(1<<20), float64(h.QueueLimit)/(1<<20)), 146)
+	box(fmt.Sprintf(" SYN %s   UDP %s   Queue rejects %d   Discarded samples %d", number(strconv.FormatInt(t.SYN, 10)), number(strconv.FormatInt(t.UDP, 10)), h.QueueRejected, h.DiscardedSamples), 146)
+	warning := " Suspicion is a decaying heuristic, not a probability or attribution"
+	if s.Error != "" {
+		warning = " ! " + s.Error
+	} else if h.FlushError != "" {
+		warning = " ! " + h.FlushError
+	} else if h.DiscardedSamples > 0 {
+		warning = " ! Some RAM observations were discarded; statistics may be incomplete"
+	}
+	box(warning, 220)
+	edge("IP ACTIVITY · sort " + s.Sort)
+	ipWidth := min(39, max(16, inner-42))
+	countWidth := max(7, min(15, inner-ipWidth-26))
+	box(fmt.Sprintf(" %-*s %5s %*s %8s", ipWidth, "SOURCE IP", "RISK", countWidth, "PACKETS", "SYN"), 109)
+	available := height - len(lines) - 2
+	offset := max(0, min(s.Offset, max(0, len(s.Data.NetworkIPs)-available)))
+	for i := 0; i < available; i++ {
+		index := offset + i
+		if index >= len(s.Data.NetworkIPs) {
+			if i == 0 && len(s.Data.NetworkIPs) == 0 {
+				box(" Waiting for observed network activity…", 146)
+			} else {
+				box("", 255)
+			}
+			continue
+		}
+		row := s.Data.NetworkIPs[index]
+		color := 255
+		if row.Score >= 70 {
+			color = 203
+		} else if row.Score >= 30 {
+			color = 220
+		} else if row.Score > 0 {
+			color = 153
+		}
+		box(fmt.Sprintf(" %-*s %5d %*s %8s", ipWidth, cut(row.IP, ipWidth), row.Score, countWidth, cut(number(strconv.FormatInt(row.Packets, 10)), countWidth), cut(number(strconv.FormatInt(row.SYN, 10)), 8)), color)
+	}
+	edge("q quit · ↑↓ scroll · space pause · r refresh · c color · s sort")
+	lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
+	return strings.Join(lines, "\r\n")
+}

@@ -75,14 +75,8 @@ func (s *Store) ApplyPrepared(ctx context.Context, p *PreparedBatch) error {
 	if len(p.targets) == 0 {
 		return nil
 	}
-	if st, e := os.Stat(s.path + "-wal"); e == nil && st.Size() > s.walLimit {
-		var busy, log, done int
-		if e = s.DB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done); e != nil {
-			return e
-		}
-		if busy != 0 {
-			return ErrCheckpointBusy
-		}
+	if e := s.EnsureWAL(ctx); e != nil {
+		return e
 	}
 	tx, e := s.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -97,9 +91,33 @@ func (s *Store) ApplyPrepared(ctx context.Context, p *PreparedBatch) error {
 		return e
 	}
 	defer stmt.Close()
+	var tracked *sql.Stmt
+	if s.replicate {
+		if _, e = tx.ExecContext(ctx, "UPDATE replica_source SET sequence=sequence+1 WHERE id=1"); e != nil {
+			return e
+		}
+		tracked, e = tx.PrepareContext(ctx, `INSERT INTO replica_changes(ip,sequence) VALUES(?,(SELECT sequence FROM replica_source WHERE id=1)) ON CONFLICT(ip) DO UPDATE SET sequence=excluded.sequence`)
+		if e != nil {
+			return e
+		}
+		defer tracked.Close()
+	}
 	for _, row := range p.targets {
-		if _, e = stmt.ExecContext(ctx, row.IP, row.Requests, row.First, row.Last); e != nil {
+		result, err := stmt.ExecContext(ctx, row.IP, row.Requests, row.First, row.Last)
+		e = err
+		if e != nil {
 			return fmt.Errorf("write targets (disk or DB limit?): %w", e)
+		}
+		if tracked != nil {
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if changed > 0 {
+				if _, e = tracked.ExecContext(ctx, row.IP); e != nil {
+					return e
+				}
+			}
 		}
 	}
 	return tx.Commit()
@@ -126,4 +144,18 @@ func (s *Store) FlushBatch(batch map[netip.Addr]Delta) (Change, error) {
 	}
 	s.Acknowledge(p)
 	return p.Change, nil
+}
+
+func (s *Store) EnsureWAL(ctx context.Context) error {
+	if st, e := os.Stat(s.path + "-wal"); e == nil && st.Size() > s.walLimit {
+		var busy, log, done int
+		if e = s.DB.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done); e != nil {
+			return e
+		}
+		if busy != 0 {
+			return ErrCheckpointBusy
+		}
+	}
+
+	return nil
 }

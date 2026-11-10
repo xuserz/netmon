@@ -1,0 +1,47 @@
+# New installations monitor incoming IPv4/IPv6 activity on all ports.
+# Existing configs without mode retain the legacy DNS accounting behavior.
+mode: network
+# Choose ONE interface before Docker NAT: ip route get 1.1.1.1
+interface: eth0
+destination_ip: ""
+# Network statistics use this path with .network.db appended.
+database: /var/lib/netmon/stats.db
+flush_interval: 5s
+# Main SQLite limit in MiB, plus WAL. 20 GiB = 20480.
+max_database_mb: 256
+max_wal_mb: 16
+# Exact PACKET_MMAP ring allocation; process memory is additional.
+socket_buffer_mb: 4
+# Bounded per-IP rate/scan evidence cache. Evictions are reported.
+max_activity_ips: 10000
+
+storage:
+  # full: store and replicate statistics; forward: RAM-only sender, requires peers.
+  mode: full
+  # Same retention and rating policy are required on every cluster member.
+  retention: 24h
+  queue_memory_mb: 8
+
+network:
+  # false makes a full node a receiver/storage replica only.
+  capture: true
+  # Empty = all ports/protocols. These lists filter destination ports.
+  ports: []
+  exclude_ports: []
+  runtime_directory: /run/netmon
+  rating:
+    pps_threshold: 1000
+    syn_pps_threshold: 100
+    scan_ports_threshold: 8
+    half_life: 1h
+
+# Disabled = standalone full node. Forward nodes require enabled=true + peers.
+# Dedicated replication TCP ports are automatically excluded from monitoring.
+cluster:
+  enabled: false
+  name: ""
+  listen: "0.0.0.0:9845"
+  advertise: ""
+  key_file: /etc/netmon/cluster.key
+  peers: []
+  sync_interval: 5s

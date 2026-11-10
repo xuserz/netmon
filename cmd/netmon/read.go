@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"dnsmon/internal/store"
+	"netmon/internal/store"
 )
 
 func show(tx *sql.Tx, ip string, w io.Writer) error {
@@ -32,14 +32,16 @@ func show(tx *sql.Tx, ip string, w io.Writer) error {
 	printClient(w, c)
 	return nil
 }
-func export(ctx context.Context, source *store.Store, dbPath, path string, w io.Writer) error {
+func export(ctx context.Context, source *store.Store, dbPath, path string, w io.Writer, protected ...string) error {
 	abs, e := filepath.Abs(path)
 	if e != nil {
 		return e
 	}
-	dbPaths := []string{dbPath}
-	if real, err := filepath.EvalSymlinks(dbPath); err == nil {
-		dbPaths = append(dbPaths, real)
+	dbPaths := append([]string{dbPath}, protected...)
+	for _, base := range dbPaths {
+		if real, err := filepath.EvalSymlinks(base); err == nil {
+			dbPaths = append(dbPaths, real)
+		}
 	}
 	for _, base := range dbPaths {
 		for _, suffix := range []string{"", "-wal", "-shm", ".lock", ".sock"} {
@@ -67,7 +69,7 @@ func export(ctx context.Context, source *store.Store, dbPath, path string, w io.
 		return e
 	}
 	defer tx.Rollback()
-	f, e := os.CreateTemp(filepath.Dir(abs), ".dnsmon-csv-*")
+	f, e := os.CreateTemp(filepath.Dir(abs), ".netmon-csv-*")
 	if e != nil {
 		return e
 	}
