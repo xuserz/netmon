@@ -46,7 +46,7 @@ jobs:
           sudo env DNSMON_INTEGRATION=1 GOCACHE="$RUNNER_TEMP/raw-go-cache" GOMODCACHE="$(go env GOMODCACHE)" "$(command -v go)" test -count=1 -v ./internal/capture ./internal/monitor -run Live
       - name: Paced real-binary load test on isolated loopback
         run: |
-          sudo unshare --net sh -c 'ip link set lo up; python3 scripts/loadtest.py --rate 1000 --seconds 3'
+          sudo unshare --net sh -c 'set -e; ip link set lo up; DNSMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -p test_recovery.py -v; python3 scripts/loadtest.py --rate 1000 --seconds 3; python3 scripts/loadtest.py --rate 2000 --seconds 3 --clients 1000 --live --burst-size 200'
 
   build:
     name: Static Linux ${{ matrix.arch }}

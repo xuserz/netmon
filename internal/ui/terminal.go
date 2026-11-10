@@ -27,8 +27,9 @@ type Options struct {
 	Interval time.Duration
 	Version  string
 	Color    bool
+	Sort     string
 }
-type Fetcher func(context.Context) (live.Response, error)
+type Fetcher func(context.Context, string) (live.Response, error)
 
 func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 	if opt.In == nil {
@@ -114,9 +115,10 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 	}()
 	type result struct {
 		data live.Response
+		sort string
 		err  error
 	}
-	requests := make(chan struct{}, 1)
+	requests := make(chan string, 1)
 	results := make(chan result, 1)
 	workers.Add(1)
 	go func() {
@@ -125,12 +127,12 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-requests:
+			case sort := <-requests:
 				rctx, stop := context.WithTimeout(ctx, 2*time.Second)
-				data, e := fetch(rctx)
+				data, e := fetch(rctx, sort)
 				stop()
 				select {
-				case results <- result{data, e}:
+				case results <- result{data, sort, e}:
 				case <-ctx.Done():
 					return
 				}
@@ -138,9 +140,13 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 		}
 	}()
 	defer func() { cancel(); workers.Wait() }()
+	state := State{Version: opt.Version, Color: opt.Color, Sort: opt.Sort}
+	if state.Sort == "" {
+		state.Sort = "total"
+	}
 	request := func() {
 		select {
-		case requests <- struct{}{}:
+		case requests <- state.Sort:
 		default:
 		}
 	}
@@ -151,16 +157,16 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 		}
 		return int(w.Col), int(w.Row)
 	}
-	state := State{Version: opt.Version, Color: opt.Color}
 	ticker := time.NewTicker(opt.Interval)
 	defer ticker.Stop()
 	render := func() error {
 		w, h := size()
-		state.Offset = max(0, min(state.Offset, max(0, len(state.Data.Clients)-max(1, h-11))))
+		state.Offset = max(0, min(state.Offset, max(0, state.rowCount()-max(1, h-11))))
 		_, e := fmt.Fprint(opt.Out, "\x1b[H", Render(state, w, h))
 		return e
 	}
 	var previous live.Health
+	var previousPoll time.Time
 	var decoder keyDecoder
 	request()
 	if e = render(); e != nil {
@@ -198,20 +204,28 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				request()
 			}
 		case r := <-results:
+			if r.sort != state.Sort {
+				request()
+				continue
+			}
 			if r.err != nil {
 				state.Error = r.err.Error()
 			} else if !state.Paused {
 				state.Data = r.data
 				state.Error = ""
 				h := r.data.Health
-				dt := h.Updated.Sub(previous.Updated).Seconds()
-				if h.PID == previous.PID && dt > 0 && h.CPUSeconds >= previous.CPUSeconds && h.Counted >= previous.Counted {
-					state.CPU = 100 * (h.CPUSeconds - previous.CPUSeconds) / dt
+				now := time.Now()
+				dt := now.Sub(previousPoll).Seconds()
+				if h.PID == previous.PID && dt > 0 && h.Counted >= previous.Counted {
 					state.Rate = float64(h.Counted-previous.Counted) / dt
+					if cpuDt := h.Updated.Sub(previous.Updated).Seconds(); cpuDt > 0 && h.CPUSeconds >= previous.CPUSeconds {
+						state.CPU = 100 * (h.CPUSeconds - previous.CPUSeconds) / cpuDt
+					}
 				} else {
 					state.CPU = 0
 					state.Rate = 0
 				}
+				previousPoll = now
 				previous = h
 				state.History = append(state.History, state.Rate)
 				if len(state.History) > 60 {
@@ -230,22 +244,33 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				}
 			case "refresh":
 				request()
+			case "sort":
+				switch state.Sort {
+				case "total":
+					state.Sort = "rate"
+				case "rate":
+					state.Sort = "minute"
+				default:
+					state.Sort = "total"
+				}
+				state.Offset = 0
+				request()
 			case "color":
 				state.Color = !state.Color
 			case "down":
-				state.Offset = min(max(0, len(state.Data.Clients)-1), state.Offset+1)
+				state.Offset = min(max(0, state.rowCount()-1), state.Offset+1)
 			case "up":
 				state.Offset = max(0, state.Offset-1)
 			case "page_down":
 				_, h := size()
-				state.Offset = min(max(0, len(state.Data.Clients)-1), state.Offset+max(1, h-12))
+				state.Offset = min(max(0, state.rowCount()-1), state.Offset+max(1, h-12))
 			case "page_up":
 				_, h := size()
 				state.Offset = max(0, state.Offset-max(1, h-12))
 			case "home":
 				state.Offset = 0
 			case "end":
-				state.Offset = max(0, len(state.Data.Clients)-1)
+				state.Offset = max(0, state.rowCount()-1)
 			}
 		}
 		if e = render(); e != nil {
@@ -295,6 +320,8 @@ func (d *keyDecoder) Feed(b byte) string {
 		return "refresh"
 	case 'c', 'C':
 		return "color"
+	case 's', 'S':
+		return "sort"
 	case 'j':
 		return "down"
 	case 'k':

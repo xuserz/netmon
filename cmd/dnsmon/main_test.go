@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"math"
 	"net/netip"
@@ -59,7 +60,7 @@ func TestReadCommandsAndExport(t *testing.T) {
 			t.Fatal("export allowed overwriting service state", target)
 		}
 	}
-	for _, args := range [][]string{{"top", "-n", "0"}, {"show", "invalid"}, {"show", "192.0.2.99"}, {"list", "unexpected"}, {"export"}, {"unknown"}, {"top", "--once", "--watch"}, {"top", "--interval", "100ms"}, {"top", "--watch"}} {
+	for _, args := range [][]string{{"top", "-n", "0"}, {"top", "--sort", "rate", "--once"}, {"top", "--sort", "invalid"}, {"export", "--csv", dest, "--timeout", "0s"}, {"show", "invalid"}, {"show", "192.0.2.99"}, {"list", "unexpected"}, {"export"}, {"unknown"}, {"top", "--once", "--watch"}, {"top", "--interval", "100ms"}, {"top", "--watch"}} {
 		if e = run(append([]string{"--db", path}, args...), &out, &out); e == nil {
 			t.Fatal("expected error", args)
 		}
@@ -73,5 +74,32 @@ func TestReadNeverCreatesDatabase(t *testing.T) {
 	}
 	if _, e := os.Stat(path); !os.IsNotExist(e) {
 		t.Fatal(e)
+	}
+}
+
+func TestCanceledExportRetainsExistingCSVAndCleansSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.db")
+	s, e := store.Open(path, true, 8, 2)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	target := filepath.Join(dir, "stats.csv")
+	if e = os.WriteFile(target, []byte("original export\n"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if e = export(ctx, s, path, target, &bytes.Buffer{}); e == nil {
+		t.Fatal("cancellation ignored")
+	}
+	data, e := os.ReadFile(target)
+	if e != nil || string(data) != "original export\n" {
+		t.Fatal(string(data), e)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, ".dnsmon-*"))
+	if len(matches) != 0 {
+		t.Fatal("temporary exports leaked", matches)
 	}
 }

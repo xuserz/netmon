@@ -164,7 +164,7 @@ class PackagingTests(unittest.TestCase):
             scripts = root / "scripts"
             scripts.mkdir()
             shutil.copyfile(ROOT / "scripts/package-release.sh", scripts / "package-release.sh")
-            inputs = ["bin/dnsmon", "dnsmon.yaml", "packaging/dnsmon.service", "README.md",
+            inputs = ["bin/dnsmon", "dnsmon.yaml", "packaging/dnsmon.service", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md",
                       "scripts/install.sh", "scripts/uninstall.sh", "scripts/install-release.sh",
                       "docs/configuration.md", "docs/operations.md", "docs/development.md"]
             for name in inputs:

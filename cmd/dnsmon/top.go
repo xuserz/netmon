@@ -23,9 +23,12 @@ type topFetcher struct {
 	stamp  string
 }
 
-func (f *topFetcher) Fetch(ctx context.Context) (live.Response, error) {
-	if r, e := live.Fetch(ctx, f.db, live.Request{Op: "top", Limit: f.limit}); e == nil {
+func (f *topFetcher) Fetch(ctx context.Context, sort string) (live.Response, error) {
+	if r, e := live.Fetch(ctx, f.db, live.Request{Op: "top", Limit: f.limit, Sort: sort}); e == nil {
 		return r, nil
+	}
+	if sort != "total" {
+		return live.Response{Source: "stored", Sort: sort}, nil
 	}
 	stamp := ""
 	for _, suffix := range []string{"", "-wal"} {
@@ -50,7 +53,7 @@ func (f *topFetcher) Fetch(ctx context.Context) (live.Response, error) {
 	f.stamp = stamp
 	return r, nil
 }
-func interactiveTop(out io.Writer, db string, limit int, interval time.Duration, noColor bool) error {
+func interactiveTop(out io.Writer, db string, limit int, interval time.Duration, noColor bool, sort string) error {
 	file, ok := out.(*os.File)
 	if !ok {
 		return fmt.Errorf("--watch requires a terminal")
@@ -62,7 +65,7 @@ func interactiveTop(out io.Writer, db string, limit int, interval time.Duration,
 	defer stop()
 	_, noColorEnv := os.LookupEnv("NO_COLOR")
 	fetch := &topFetcher{db: db, limit: limit}
-	return ui.Run(ctx, ui.Options{In: os.Stdin, Out: file, Interval: interval, Version: version, Color: !noColor && !noColorEnv}, fetch.Fetch)
+	return ui.Run(ctx, ui.Options{In: os.Stdin, Out: file, Interval: interval, Version: version, Sort: sort, Color: !noColor && !noColorEnv}, fetch.Fetch)
 }
 func terminalOutput(out io.Writer) bool {
 	f, ok := out.(*os.File)

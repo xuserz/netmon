@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,13 +12,6 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
-
-const schema = `CREATE TABLE IF NOT EXISTS clients (
- ip TEXT PRIMARY KEY,
- requests INTEGER NOT NULL DEFAULT 0 CHECK(requests >= 0),
- first_seen INTEGER NOT NULL,
- last_seen INTEGER NOT NULL
-);`
 
 type Delta struct {
 	Requests    int64
@@ -35,6 +27,7 @@ type Store struct {
 	DB       *sql.DB
 	path     string
 	walLimit int64
+	cache    *clientCache
 }
 
 func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
@@ -48,7 +41,7 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 	u := url.URL{Scheme: "file", Path: path}
 	q := u.Query()
 	q.Set("mode", mode)
-	q.Set("_busy_timeout", "5000")
+	q.Set("_busy_timeout", "500")
 	q.Set("_cache_size", "-1024")
 	if write {
 		q.Set("_journal_mode", "WAL")
@@ -62,7 +55,7 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{DB: db, path: path, walLimit: walMB << 20}
+	s := &Store{DB: db, path: path, walLimit: walMB << 20, cache: newCache(8192)}
 	ok := false
 	defer func() {
 		if !ok {
@@ -93,10 +86,15 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 		if actual != maxPages {
 			return nil, errors.New("could not apply SQLite page limit")
 		}
-		for _, statement := range []string{"PRAGMA wal_autocheckpoint=256", fmt.Sprintf("PRAGMA journal_size_limit=%d", s.walLimit), schema, "CREATE INDEX IF NOT EXISTS clients_rank ON clients(requests DESC, ip ASC)"} {
+		for _, statement := range []string{"PRAGMA wal_autocheckpoint=256", fmt.Sprintf("PRAGMA journal_size_limit=%d", s.walLimit)} {
 			if _, err = db.Exec(statement); err != nil {
 				return nil, err
 			}
+		}
+	}
+	if write {
+		if err = migrate(db); err != nil {
+			return nil, err
 		}
 	}
 	ok = true
@@ -104,53 +102,6 @@ func Open(path string, write bool, maxMB, walMB int64) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
-
-func (s *Store) Flush(batch map[netip.Addr]Delta) error { _, e := s.FlushBatch(batch); return e }
-
-func (s *Store) FlushBatch(batch map[netip.Addr]Delta) (Change, error) {
-	if len(batch) == 0 {
-		return Change{}, nil
-	}
-	if st, e := os.Stat(s.path + "-wal"); e == nil && st.Size() > s.walLimit {
-		// A long reader can pin WAL pages. Never keep appending without a bound.
-		var busy, log, done int
-		if e = s.DB.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done); e != nil {
-			return Change{}, e
-		}
-		if busy != 0 {
-			return Change{}, errors.New("WAL limit reached and a reader prevents checkpoint; monitoring stopped; close long readers and restart")
-		}
-	}
-	tx, e := s.DB.Begin()
-	if e != nil {
-		return Change{}, e
-	}
-	defer tx.Rollback()
-	existing, e := lookup(context.Background(), tx, batch)
-	if e != nil {
-		return Change{}, e
-	}
-	stmt, e := tx.Prepare(`INSERT INTO clients(ip,requests,first_seen,last_seen) VALUES(?,?,?,?)
- ON CONFLICT(ip) DO UPDATE SET
- requests=CASE WHEN clients.requests > 9223372036854775807-excluded.requests THEN 9223372036854775807 ELSE clients.requests+excluded.requests END,
- first_seen=min(clients.first_seen,excluded.first_seen), last_seen=max(clients.last_seen,excluded.last_seen)`)
-	if e != nil {
-		return Change{}, e
-	}
-	defer stmt.Close()
-	for ip, d := range batch {
-		if d.Requests < 0 {
-			return Change{}, errors.New("negative counter delta")
-		}
-		if _, e = stmt.Exec(ip.String(), d.Requests, d.First, d.Last); e != nil {
-			return Change{}, fmt.Errorf("flush failed (disk or configured DB limit?): %w", e)
-		}
-	}
-	if e = tx.Commit(); e != nil {
-		return Change{}, e
-	}
-	return changes(existing, batch), nil
-}
 
 func Add(batch map[netip.Addr]Delta, ip netip.Addr, n int64, ts int64) {
 	d, exists := batch[ip]

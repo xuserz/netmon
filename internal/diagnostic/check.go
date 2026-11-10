@@ -50,15 +50,7 @@ func Checks(c config.Config, startup bool) []Finding {
 	if len(live.Path(c.Database)) > 107 {
 		add("FAIL", "database path is too long for a Unix diagnostic socket")
 	}
-	if data, err := os.ReadFile("/proc/sys/net/core/rmem_max"); err == nil {
-		limit, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-		requested := int64(c.SocketBufferMB) << 20
-		if limit < requested {
-			add("WARN", "socket buffer capped: requested %d bytes, net.core.rmem_max=%d", requested, limit)
-		} else {
-			add("OK", "net.core.rmem_max allows the requested %d-byte receive buffer", requested)
-		}
-	}
+	add("OK", "TPACKET_V3 receive ring: %d MiB (not capped by net.core.rmem_max)", c.SocketBufferMB)
 	dir := filepath.Dir(c.Database)
 	if st, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) && startup {
@@ -110,6 +102,12 @@ func Checks(c config.Config, startup bool) []Finding {
 			add("OK", "capture process pid=%d; counted=%d; kernel drops=%d", h.PID, h.Counted, h.KernelDrops)
 			if h.LastRequest.IsZero() {
 				add("WARN", "no DNS request observed since this process started")
+			}
+			if h.BlockedFor > 0 {
+				add("WARN", "capture waiting for storage for %s; oldest pending %s", h.BlockedFor.Round(time.Millisecond), h.PendingAge.Round(time.Millisecond))
+			}
+			if h.CaptureError != "" {
+				add("FAIL", "capture: %s", h.CaptureError)
 			}
 			if h.FlushError != "" {
 				add("FAIL", "writer: %s", h.FlushError)

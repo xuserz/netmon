@@ -92,7 +92,9 @@ fi
 mv -f -- "$binary_temp" /usr/local/bin/dnsmon
 install -m 0644 "$project_dir/packaging/dnsmon.service" /etc/systemd/system/dnsmon.service
 install -d -m 0755 /usr/share/doc/dnsmon
-install -m 0644 "$project_dir/README.md" /usr/share/doc/dnsmon/README.md
+for document in README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md CONTRIBUTING.md; do
+  install -m 0644 "$project_dir/$document" "/usr/share/doc/dnsmon/$document"
+done
 install -m 0644 "$project_dir/dnsmon.yaml" /usr/share/doc/dnsmon/dnsmon.yaml
 if [ -d "$project_dir/docs" ]; then
   install -d -m 0755 /usr/share/doc/dnsmon/docs

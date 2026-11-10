@@ -34,7 +34,7 @@ func TestProtocolAndLimits(t *testing.T) {
 	if st, e := os.Stat(Path(db)); e != nil || st.Mode().Perm() != 0660 {
 		t.Fatal(st, e)
 	}
-	for _, req := range []Request{{Op: "delete"}, {Op: "top", Limit: 1001}, {Op: "top", Limit: 0}} {
+	for _, req := range []Request{{Op: "delete"}, {Op: "top", Limit: 1001}, {Op: "top", Limit: 0}, {Op: "top", Limit: 10, Sort: "unknown"}} {
 		if _, e = Fetch(context.Background(), db, req); e == nil {
 			t.Fatal("accepted invalid request", req)
 		}

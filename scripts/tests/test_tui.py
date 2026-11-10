@@ -145,8 +145,9 @@ class TerminalTests(unittest.TestCase):
                         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
                         response = {"source": "live", "health": {"pid": 12345, "interface": "ens3", "port": 53,
                                     "started": now, "updated": now, "counted_requests": 777777,
-                                    "pending_requests": 7, "rss_bytes": 15 << 20},
+                                    "pending_requests": 7, "rss_bytes": 15 << 20,"activity_limit":10000},
                                     "totals": {"requests": "777777", "unique_ips": 1},
+                                    "activity": [{"ip":"192.0.2.77","rate":123.4,"minute":5678,"share_percent":12.3}],
                                     "clients": [{"ip": "192.0.2.1", "requests": 777777,
                                                  "first_seen": 1794272400, "last_seen": 1794272400}]}
                         conn.sendall(json.dumps(response).encode() + b"\n")
@@ -167,6 +168,21 @@ class TerminalTests(unittest.TestCase):
         self.until(b"777,777")
         self.assertIn(b"LIVE", self.data)
         self.assertIn(b"15.0 MiB", self.data)
+        self.quit_and_verify_restore()
+
+    def test_activity_sort_flag_and_keyboard_cycle(self):
+        self.live_server()
+        self.start("--sort", "rate", wait_for=b"192.0.2.77")
+        self.assertIn(b"123.4", self.data)
+        self.assertIn(b"5,678", self.data)
+        self.assertIn(b"12.3%", self.data)
+        self.data = b""
+        os.write(self.master, b"s")
+        self.until(b"60 complete seconds")
+        self.data = b""
+        os.write(self.master, b"s")
+        self.until(b"total requests")
+        self.until(b"192.0.2.1")
         self.quit_and_verify_restore()
 
     def test_quit_remains_responsive_while_live_request_waits(self):

@@ -27,21 +27,26 @@ one MiB is 1,048,576 bytes.
 | `max_pending_ips` | `10000` | Maximum distinct IPs per in-memory batch. A new IP beyond this limit triggers early submission. |
 | `max_database_mb` | `64` | Hard limit on the main SQLite database in MiB. WAL is separate. |
 | `max_wal_mb` | `16` | WAL checkpoint threshold in MiB, not a hard total-disk quota. |
-| `socket_buffer_mb` | `2` | Requested kernel receive buffer in MiB. `net.core.rmem_max` may cap it. |
+| `socket_buffer_mb` | `2` | Exact PACKET_MMAP TPACKET_V3 receive-ring allocation in MiB, from 1 to 64. `net.core.rmem_max` does not cap this ring. |
 | `max_tcp_flows` | `1024` | Maximum active TCP flows. New flows beyond the limit are skipped and reported. |
 | `max_tcp_bytes` | `8388608` | Total buffered TCP payload budget in bytes. |
 | `max_fragment_sets` | `256` | Maximum incomplete IP datagrams being reassembled. |
 | `max_fragment_bytes` | `2097152` | Total buffered IP fragment payload budget in bytes. |
 | `reassembly_timeout` | `2m` | Expiry for incomplete TCP messages and IP fragment sets. |
 | `tcp_idle_timeout` | `10m` | Idle lifetime of clean, persistent TCP connections. |
+| `max_activity_ips` | `10000` | Maximum IPs in the volatile activity LRU cache; 0 disables it, maximum 100,000. This does not limit stored clients. |
+| `hot_cache_ips` | `8192` | Maximum confirmed client totals in the writer LRU cache; 0 disables it, maximum 1,000,000. |
+| `write_retry_timeout` | `30s` | Retry budget per preparation/apply stage for transient SQLite errors, from 1s to 5m. Shutdown shortens remaining retries to at most 5s plus an already running call. |
 
 Two batches can exist at once: one collecting counters and one being written.
 If both fill, capture waits for the writer instead of allocating another batch.
-This can cause socket-buffer losses during sustained disk stalls.
+This can cause receive-ring losses during sustained disk stalls. Retries retain
+the same prepared absolute targets so replaying an uncertain commit does not
+increment counters twice. A retry budget does not provide a persistent queue.
 
 Reassembly budgets cover payload bytes, not total process RAM. Go metadata,
-SQLite caches, live snapshots, temporary copies, and kernel socket memory add
-overhead. Raising limits increases possible memory use; it does not reserve CPU
+SQLite caches, confirmed-client and activity caches, live snapshots, temporary
+copies, and the mapped receive ring add overhead. Raising limits increases possible memory use; it does not reserve CPU
 or guarantee loss-free capture.
 
 For example, a 20 GiB main-database limit is:
@@ -52,6 +57,16 @@ max_database_mb: 20480
 
 This is an upper bound, not preallocated disk space. See
 [storage limits](operations.md#storage-limits) for WAL and disk-full behavior.
+
+The receive ring uses 1 MiB blocks and a 64 ms block retirement timeout. Capture
+borrows packet bytes from mapped blocks; UDP parsing avoids a userspace copy.
+TCP and fragment reassembly copy only data they must retain. Allocation failure
+is reported at startup; dnsmon does not silently select a smaller ring.
+
+The activity cache uses 61 per-second counters per retained IP and consumes
+several MiB at the default capacity, plus Go metadata and GC overhead. It is
+independent of both pending-write batches and the confirmed writer cache.
+Evicting an activity entry never removes or changes cumulative SQLite counters.
 
 ## Capture scope
 

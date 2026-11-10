@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"errors"
@@ -31,7 +32,7 @@ func show(tx *sql.Tx, ip string, w io.Writer) error {
 	printClient(w, c)
 	return nil
 }
-func export(tx *sql.Tx, dbPath, path string, w io.Writer) error {
+func export(ctx context.Context, source *store.Store, dbPath, path string, w io.Writer) error {
 	abs, e := filepath.Abs(path)
 	if e != nil {
 		return e
@@ -55,13 +56,24 @@ func export(tx *sql.Tx, dbPath, path string, w io.Writer) error {
 			}
 		}
 	}
+	copy, cleanup, e := source.Snapshot(ctx, filepath.Dir(abs))
+	if e != nil {
+		return fmt.Errorf("prepare export snapshot: %w", e)
+	}
+	defer cleanup()
+	defer copy.Close()
+	tx, e := copy.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
 	f, e := os.CreateTemp(filepath.Dir(abs), ".dnsmon-csv-*")
 	if e != nil {
 		return e
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
-	rows, e := tx.Query("SELECT ip,requests,first_seen,last_seen FROM clients ORDER BY requests DESC,ip ASC")
+	rows, e := tx.QueryContext(ctx, "SELECT ip,requests,first_seen,last_seen FROM clients ORDER BY requests DESC,ip ASC")
 	if e != nil {
 		return e
 	}

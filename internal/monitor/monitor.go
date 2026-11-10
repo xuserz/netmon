@@ -54,10 +54,8 @@ func Run(ctx context.Context, c config.Config) error {
 		return fmt.Errorf("diagnostic socket: %w", e)
 	}
 	defer server.Close()
-	log.Printf("monitoring interface=%s port=%d destination=%q receive_buffer_requested=%d receive_buffer_actual=%d database=%s", c.Interface, c.Port, c.Destination, c.SocketBufferMB<<20, sock.BufferBytes, c.Database)
-	if BufferCapped(c.SocketBufferMB<<20, sock.BufferBytes) {
-		log.Printf("WARNING: kernel capped SO_RCVBUF; net.core.rmem_max must be at least %d", c.SocketBufferMB<<20)
-	}
+	log.Printf("monitoring interface=%s port=%d destination=%q backend=tpacket_v3 ring_requested=%d ring_allocated=%d database=%s", c.Interface, c.Port, c.Destination, c.SocketBufferMB<<20, sock.BufferBytes, c.Database)
+
 	e = collect(ctx, c, sock, b, sock.BufferBytes)
 	closeErr := b.Close()
 	if closeErr == nil {
@@ -65,9 +63,6 @@ func Run(ctx context.Context, c config.Config) error {
 	}
 	return errors.Join(e, closeErr)
 }
-
-// Linux returns twice the requested SO_RCVBUF, including accounting overhead.
-func BufferCapped(requested, actual int) bool { return actual < 2*requested }
 
 type source interface {
 	Read([]byte) (int, error)
@@ -92,29 +87,51 @@ func collect(ctx context.Context, c config.Config, sock source, b *batcher, actu
 	var addErr error
 	engine.Count = func(ip netip.Addr, n, ts int64) {
 		if addErr == nil {
-			addErr = b.Add(ip, n, ts)
+			addErr = b.AddContext(ctx, ip, n, ts)
 		}
 	}
 	nextFlush := time.Now().Add(c.FlushInterval)
 	nextHealth := time.Now()
 	nextReport := time.Now().Add(10 * time.Second)
 	var previous packet.Counters
-	var received, drops uint64
-	buf := make([]byte, 65575)
+	var received uint64
+	var buf []byte
+	reader, mapped := sock.(interface {
+		Next() ([]byte, time.Time, error)
+	})
+	if !mapped {
+		buf = make([]byte, 65575)
+	}
+	b.recordCapture(engine, 0, time.Time{})
+	stopHealth := b.startHealth(ctx, sock, actual, mapped)
+	defer stopHealth()
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		n, e := sock.Read(buf)
+		var data []byte
+		var arrival time.Time
+		var e error
+		if mapped {
+			data, arrival, e = reader.Next()
+		} else {
+			var n int
+			n, e = sock.Read(buf)
+			data = buf[:n]
+			arrival = time.Now()
+		}
 		now := time.Now()
 		if e != nil {
 			return e
 		}
-		if n > 0 {
+		if len(data) > 0 {
 			received++
-			engine.Feed(buf[:n], now)
+			engine.Feed(data, arrival)
 		}
 		if addErr != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("writer failed, pending counters could not be committed: %w", addErr)
 		}
 		if e = b.Error(); e != nil {
@@ -126,15 +143,7 @@ func collect(ctx context.Context, c config.Config, sock source, b *batcher, actu
 		}
 		if !now.Before(nextHealth) {
 			engine.Expire(now)
-			dropped, err := sock.Drops()
-			if err != nil {
-				return err
-			}
-			drops += uint64(dropped)
-			if dropped > 0 {
-				log.Printf("WARNING: kernel dropped %d packets; totals may be incomplete", dropped)
-			}
-			b.update(engine, received, drops, actual)
+			b.recordCapture(engine, received, arrival)
 			nextHealth = now.Add(time.Second)
 		}
 		if !now.Before(nextReport) {

@@ -51,3 +51,34 @@ func TestKeyboardSequencesAcrossReads(t *testing.T) {
 		}
 	}
 }
+
+func TestStaleSnapshotKeepsCountsAndShowsRetryDiagnostic(t *testing.T) {
+	s := State{Data: live.Response{Source: "live", SnapshotAt: time.Now().Add(-10 * time.Second), Totals: store.Totals{Requests: "123"}, Health: live.Health{WriteRetries: 3, FlushError: "database is locked"}}}
+	out := Render(s, 110, 24)
+	for _, want := range []string{"STALE", "123", "Retries 3", "database is locked"} {
+		if !strings.Contains(out, want) {
+			t.Fatal(want, out)
+		}
+	}
+}
+
+func TestActivityRendererFitsAndLabelsWindows(t *testing.T) {
+	for _, sort := range []string{"rate", "minute"} {
+		s := State{Sort: sort, Color: true, Data: live.Response{Source: "live", ActivityPartial: true, Activity: []live.ActivityClient{{IP: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", Rate: 1234.5, Minute: 123456, Share: 10.5}}}}
+		for _, size := range [][2]int{{42, 12}, {80, 24}, {110, 28}} {
+			out := ansi.ReplaceAllString(Render(s, size[0], size[1]), "")
+			lines := strings.Split(out, "\r\n")
+			if len(lines) != size[1] {
+				t.Fatal(size, len(lines))
+			}
+			for _, line := range lines {
+				if len([]rune(line)) != size[0] {
+					t.Fatal(size, line)
+				}
+			}
+			if !strings.Contains(out, "REQ/S") {
+				t.Fatal(out)
+			}
+		}
+	}
+}

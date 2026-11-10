@@ -33,7 +33,8 @@ file bin/dnsmon
 
 Both build targets accept `VERSION`; the value is embedded in `dnsmon version`.
 Release bundles include the binary, configuration, systemd unit, installers, and
-README. Package a binary built for the selected architecture with:
+README, documentation, MIT License, third-party notices, changelog, and
+contribution guide. Package a binary built for the selected architecture with:
 
 ```sh
 ./scripts/package-release.sh amd64 dist
@@ -56,13 +57,18 @@ keyboard controls, resize, suspension, and terminal restoration.
 Packet tests cover DNS structure, UDP/TCP IPv4/IPv6, responses, fragmentation,
 reassembly, retransmissions, sequence wrap, limits, and expiry. Storage and
 monitor tests cover consistent live overlays, saturation, bounded asynchronous
-writes, writer failure, shutdown, and SQLite size-limit rollback.
+writes, transient and uncertain commit replay, immutable snapshots under batch
+reuse, confirmed-cache eviction, shutdown, migration preservation, and rollback
+when a migration reaches the SQLite page limit. Tests also cover SQLite fix
+version, export isolation and cleanup, SIGKILL recovery, bounded activity
+windows/eviction, and a health heartbeat during a blocked writer.
 
 Fuzz the packet and DNS parsers separately:
 
 ```sh
 go test ./internal/packet -fuzz FuzzFeed -fuzztime 10s
 go test ./internal/packet -fuzz FuzzDNS -fuzztime 10s
+go test ./internal/capture -fuzz FuzzRingFrame -fuzztime 10s
 ```
 
 ### Network integration
@@ -78,14 +84,18 @@ isolated network namespace:
 unshare --user --map-root-user --net sh -c '
   ip link set lo up
   DNSMON_INTEGRATION=1 go test -race -count=1 ./...
+  DNSMON_INTEGRATION=1 python3 -m unittest discover -s scripts/tests -v
 '
 ```
 
-`TestLivePacketPipeline` checks real UDP/TCP over IPv4/IPv6 through AF_PACKET/BPF
+`TestLivePacketPipeline` checks real UDP/TCP over IPv4/IPv6 through AF_PACKET/BPF/TPACKET_V3
 and verifies the resulting database. `TestLiveBridgeIngressCountsOnce` creates
 an isolated veth/bridge path and verifies that 100 requests are counted exactly
 once with the original source IP. It models bridge traversal without requiring
-Docker or changing host firewall rules.
+Docker or changing host firewall rules. Python recovery tests run the actual
+binary, kill/restart it after a confirmed flush, and block SQLite while feeding
+a burst of packets. They verify live diagnostics, bounded buffers, recovery,
+and preservation of confirmed counters.
 
 ### Load tests
 
@@ -105,6 +115,8 @@ isolated loopback network:
 unshare --user --map-root-user --net sh -c '
   ip link set lo up
   python3 scripts/loadtest.py --rate 5000 --seconds 3
+  python3 scripts/loadtest.py --rate 5000 --seconds 3 --clients 2000 --live
+  python3 scripts/loadtest.py --rate 5000 --seconds 3 --clients 2000 --live --burst-size 500
 '
 ```
 
@@ -113,18 +125,56 @@ process CPU as a percentage of one core, and RSS. Results depend on the host,
 traffic mix, number of clients, and storage. They do not establish a fixed CPU
 or memory guarantee for another VPS.
 
+### Reference measurements
+
+On 2026-11-10, a Ryzen 5 5600X Linux host with `GOMAXPROCS=1` observed and
+stored all 15,000 UDP queries at 5,000/s from 2,000 source IPs while a client
+polled live top at 20 requests/s. Kernel drops were zero; process CPU averaged
+about 4–4.7% of one core and sampled RSS was about 18–22 MiB across dynamic
+and static builds. This short local
+loopback workload is a regression check, not a VPS capacity estimate.
+
+With identical sorted text IPv6 keys and a ranking index, the fresh 100,000-row
+layout fixture occupied 13,422,592 bytes with rowid and 9,334,784 bytes without
+rowid (30.5% less). A migrated file retains freed pages for reuse; it does not
+automatically shrink to the fresh-layout size.
+
 ## Architecture
 
 | Component | Location |
 | --- | --- |
 | CLI and command handling | `cmd/dnsmon` |
-| AF_PACKET socket and classic BPF filter | `internal/capture` |
+| PACKET_MMAP TPACKET_V3 ring and classic BPF filter | `internal/capture` |
 | DNS validation, TCP and IP reassembly | `internal/packet` |
 | Capture loop and bounded asynchronous writer | `internal/monitor` |
 | SQLite storage and live-overlay queries | `internal/store` |
 | Read-only Unix diagnostic protocol | `internal/live` |
 | Terminal rendering and keyboard handling | `internal/ui` |
 | Configuration and startup checks | `internal/config`, `internal/diagnostic` |
+
+Capture updates bounded atomic counter slots under a short mutex. A single
+writer snapshots a frozen batch, prepares absolute targets, and retries only
+those same targets until acknowledged or failed. A separate publisher copies
+atomic slots without the capture mutex and merges them with a read-only WAL
+snapshot. It validates the writer revision before publishing an immutable result.
+Socket handlers only read that result and bounded health counters.
+
+Operational health runs independently of capture. Parser state crosses to the
+health goroutine only as immutable samples; it never reads live Engine maps.
+Activity keeps 61 atomic per-second buckets per retained IP; the capture thread
+owns its bounded LRU index, and publication reads atomic slots without scanning
+a map under the capture mutex. Activity and lifetime snapshots have independent
+publication, so a writer retry does not freeze the activity view.
+
+The confirmed-client LRU is bounded by `hot_cache_ips`; it caches only successful
+writes. `WITHOUT ROWID` uses the text IP primary key directly. See the upstream
+[SQLite design notes](https://www.sqlite.org/withoutrowid.html) and
+[kernel packet-ring documentation](https://www.kernel.org/doc/html/latest/networking/packet_mmap.html).
+Compare fresh database layouts with:
+
+```sh
+go test -v ./internal/store -run TestLayoutFootprint
+```
 
 Preserve deterministic counting, bounded memory, and the single-row-per-client
 storage model when changing the code. Domains and packet contents must not be

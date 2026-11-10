@@ -60,7 +60,7 @@ esac
         project = self.root / "checkout"
         (project / "scripts").mkdir(parents=True)
         (project / "packaging").mkdir()
-        for name in ("README.md", "dnsmon.yaml", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/dnsmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md"):
+        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "dnsmon.yaml", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/dnsmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md"):
             (project / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, project / name)
         content = (ROOT / "scripts/install.sh").read_text()
@@ -97,6 +97,7 @@ esac
         self.assertIn("new-good", self.installed.read_text())
         self.assertTrue((self.root / "usr/share/doc/dnsmon/docs/configuration.md").is_file())
         self.assertTrue((self.root / "usr/share/doc/dnsmon/dnsmon.yaml").is_file())
+        self.assertEqual((self.root / "usr/share/doc/dnsmon/LICENSE").read_text(), (ROOT / "LICENSE").read_text())
         self.assertEqual(self.state.read_text().strip(), "active")
         self.assert_data_preserved()
 

@@ -16,44 +16,67 @@ import (
 	"dnsmon/internal/store"
 )
 
+type ActivityClient struct {
+	IP     string  `json:"ip"`
+	Rate   float64 `json:"rate"`
+	Minute uint64  `json:"minute"`
+	Share  float64 `json:"share_percent"`
+}
+
 type Health struct {
-	PID             int             `json:"pid"`
-	Started         time.Time       `json:"started"`
-	Updated         time.Time       `json:"updated"`
-	Interface       string          `json:"interface"`
-	Port            uint16          `json:"port"`
-	LastRequest     time.Time       `json:"last_request"`
-	LastFlush       time.Time       `json:"last_flush"`
-	FlushDuration   time.Duration   `json:"flush_duration"`
-	Flushes         uint64          `json:"flushes"`
-	FlushError      string          `json:"flush_error,omitempty"`
-	Received        uint64          `json:"received_packets"`
-	Counted         uint64          `json:"counted_requests"`
-	KernelDrops     uint64          `json:"kernel_drops"`
-	PendingIPs      int             `json:"pending_ips"`
-	PendingRequests uint64          `json:"pending_requests"`
-	Writing         bool            `json:"writing"`
-	Backpressure    uint64          `json:"backpressure_waits"`
-	TCPFlows        int             `json:"tcp_flows"`
-	TCPBytes        int             `json:"tcp_bytes"`
-	Fragments       int             `json:"fragment_sets"`
-	FragmentBytes   int             `json:"fragment_bytes"`
-	RequestedBuffer int             `json:"requested_buffer"`
-	ActualBuffer    int             `json:"actual_buffer"`
-	RSSBytes        uint64          `json:"rss_bytes"`
-	CPUSeconds      float64         `json:"cpu_seconds"`
-	Parser          packet.Counters `json:"parser"`
+	SQLiteVersion     string          `json:"sqlite_version"`
+	CaptureUpdated    time.Time       `json:"capture_updated"`
+	CaptureError      string          `json:"capture_error,omitempty"`
+	BlockedFor        time.Duration   `json:"blocked_for"`
+	PendingAge        time.Duration   `json:"pending_age"`
+	ActivityEntries   int             `json:"activity_entries"`
+	ActivityLimit     int             `json:"activity_limit"`
+	ActivityEvictions uint64          `json:"activity_evictions"`
+	PID               int             `json:"pid"`
+	Started           time.Time       `json:"started"`
+	Updated           time.Time       `json:"updated"`
+	Interface         string          `json:"interface"`
+	Port              uint16          `json:"port"`
+	LastRequest       time.Time       `json:"last_request"`
+	LastFlush         time.Time       `json:"last_flush"`
+	FlushDuration     time.Duration   `json:"flush_duration"`
+	WriteRetries      uint64          `json:"write_retries"`
+	CaptureMode       string          `json:"capture_mode"`
+	CaptureLag        time.Duration   `json:"capture_lag"`
+	Flushes           uint64          `json:"flushes"`
+	FlushError        string          `json:"flush_error,omitempty"`
+	Received          uint64          `json:"received_packets"`
+	Counted           uint64          `json:"counted_requests"`
+	KernelDrops       uint64          `json:"kernel_drops"`
+	PendingIPs        int             `json:"pending_ips"`
+	PendingRequests   uint64          `json:"pending_requests"`
+	Writing           bool            `json:"writing"`
+	Backpressure      uint64          `json:"backpressure_waits"`
+	TCPFlows          int             `json:"tcp_flows"`
+	TCPBytes          int             `json:"tcp_bytes"`
+	Fragments         int             `json:"fragment_sets"`
+	FragmentBytes     int             `json:"fragment_bytes"`
+	RequestedBuffer   int             `json:"requested_buffer"`
+	ActualBuffer      int             `json:"actual_buffer"`
+	RSSBytes          uint64          `json:"rss_bytes"`
+	CPUSeconds        float64         `json:"cpu_seconds"`
+	Parser            packet.Counters `json:"parser"`
 }
 type Request struct {
 	Op    string `json:"op"`
+	Sort  string `json:"sort,omitempty"`
 	Limit int    `json:"limit,omitempty"`
 }
 type Response struct {
-	Health  Health         `json:"health"`
-	Totals  store.Totals   `json:"totals"`
-	Clients []store.Client `json:"clients,omitempty"`
-	Error   string         `json:"error,omitempty"`
-	Source  string         `json:"source"`
+	Sort            string           `json:"sort,omitempty"`
+	Activity        []ActivityClient `json:"activity,omitempty"`
+	ActivityPartial bool             `json:"activity_partial"`
+	Health          Health           `json:"health"`
+	Totals          store.Totals     `json:"totals"`
+	Clients         []store.Client   `json:"clients,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	Source          string           `json:"source"`
+	SnapshotAt      time.Time        `json:"snapshot_at"`
 }
 
 func Path(db string) string { return db + ".sock" }
@@ -141,6 +164,10 @@ func Serve(db string, handler func(context.Context, Request) Response) (*Server,
 				defer cancel()
 				if req.Op != "health" && req.Op != "top" {
 					json.NewEncoder(conn).Encode(Response{Error: "unknown operation"})
+					return
+				}
+				if req.Sort != "" && req.Sort != "total" && req.Sort != "rate" && req.Sort != "minute" {
+					json.NewEncoder(conn).Encode(Response{Error: "sort must be total, rate, or minute"})
 					return
 				}
 				if req.Op == "top" && (req.Limit < 1 || req.Limit > 1000) {

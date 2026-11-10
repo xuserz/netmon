@@ -12,6 +12,7 @@ import (
 )
 
 type State struct {
+	Sort      string
 	Data      live.Response
 	Error     string
 	Paused    bool
@@ -21,6 +22,14 @@ type State struct {
 	Version   string
 	Color     bool
 }
+
+func (s State) rowCount() int {
+	if s.Sort == "rate" || s.Sort == "minute" {
+		return len(s.Data.Activity)
+	}
+	return len(s.Data.Clients)
+}
+func (s State) active() bool { return s.Sort == "rate" || s.Sort == "minute" }
 
 func plain(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -141,15 +150,22 @@ func Render(s State, width, height int) string {
 	if s.Data.Source != "live" {
 		mode = "STORED · monitor unavailable"
 	}
+	if s.Data.Source == "live" && !s.Data.SnapshotAt.IsZero() && time.Since(s.Data.SnapshotAt) > 3*time.Second {
+		mode = "STALE · snapshot " + ago(s.Data.SnapshotAt)
+	}
 	if s.Paused {
 		mode = "PAUSED"
 	}
 	statusColor := 120
-	if s.Data.Source != "live" || s.Paused {
+	if s.Data.Source != "live" || s.Paused || strings.HasPrefix(mode, "STALE") {
 		statusColor = 220
 	}
 	box(fmt.Sprintf(" %s   %s:%d   %s", mode, h.Interface, h.Port, time.Now().Format("15:04:05")), statusColor)
-	box(fmt.Sprintf(" Requests %s   Clients %s   %.1f req/s", number(s.Data.Totals.Requests), number(strconv.FormatInt(s.Data.Totals.Unique, 10)), s.Rate), 255)
+	totalsLabel := "Requests"
+	if s.active() {
+		totalsLabel = "Saved requests"
+	}
+	box(fmt.Sprintf(" %s %s   Clients %s   %.1f req/s", totalsLabel, number(s.Data.Totals.Requests), number(strconv.FormatInt(s.Data.Totals.Unique, 10)), s.Rate), 255)
 	if s.Data.Source == "live" {
 		box(fmt.Sprintf(" CPU %.1f%%   RAM %s   Uptime %s", s.CPU, bytes(h.RSSBytes), duration(h.Started)), 153)
 	} else {
@@ -160,15 +176,28 @@ func Render(s State, width, height int) string {
 		dropColor = 203
 	}
 	box(fmt.Sprintf(" Drops %d  TCP issues %d  Frag issues %d  Bad DNS %d", h.KernelDrops, h.Parser.TCPDiscarded+h.Parser.Midstream, h.Parser.FragmentDiscarded, h.Parser.MalformedDNS), dropColor)
-	box(fmt.Sprintf(" Pending %d requests / %d IP slots   Saved %s", h.PendingRequests, h.PendingIPs, ago(h.LastFlush)), 146)
+	box(fmt.Sprintf(" Pending %d requests / %d IP slots   Retries %d   Saved %s", h.PendingRequests, h.PendingIPs, h.WriteRetries, ago(h.LastFlush)), 146)
 	if s.Error != "" {
 		box(" ! "+s.Error, 203)
+	} else if h.CaptureError != "" {
+		box(" ! "+h.CaptureError, 203)
 	} else if h.FlushError != "" {
 		box(" ! "+h.FlushError, 203)
+	} else if h.BlockedFor > 0 {
+		box(fmt.Sprintf(" ! Waiting for storage %s; pending age %s", h.BlockedFor.Round(time.Second), h.PendingAge.Round(time.Second)), 203)
+	} else if s.active() && s.Data.ActivityPartial {
+		box(" ! Activity cache incomplete: IP eviction or concurrent sample", 220)
 	} else {
 		box(" Rate "+spark(s.History, inner-8), 81)
 	}
-	edge("TOP CLIENTS · requests ↓")
+	title := "TOP CLIENTS · total requests ↓"
+	if s.Sort == "rate" {
+		title = "TOP CLIENTS · requests/s over 5 complete seconds ↓"
+	}
+	if s.Sort == "minute" {
+		title = "TOP CLIENTS · requests over 60 complete seconds ↓"
+	}
+	edge(title)
 	// Header + rows share the same adaptive columns. Full IPv6 is retained in
 	// normal-width windows; narrow views shorten it explicitly with an ellipsis.
 	detailed := inner >= 100
@@ -186,21 +215,57 @@ func Render(s State, width, height int) string {
 	} else if inner >= 72 {
 		header += "   LAST SEEN"
 	}
+	if s.active() {
+		ipWidth = min(39, max(14, inner-33))
+		header = fmt.Sprintf(" %-*s %8s", ipWidth, "IP ADDRESS", "REQ/S")
+		if inner >= 48 {
+			header += fmt.Sprintf(" %10s", "LAST 60S")
+		}
+		if inner >= 64 {
+			header += fmt.Sprintf(" %7s", "SHARE")
+		}
+	}
 	box(header, 109)
 	available := height - len(lines) - 2
-	offset := max(0, min(s.Offset, max(0, len(s.Data.Clients)-available)))
+	offset := max(0, min(s.Offset, max(0, s.rowCount()-available)))
 	peak := int64(1)
 	if len(s.Data.Clients) > 0 {
 		peak = max(1, s.Data.Clients[0].Requests)
 	}
 	for i := 0; i < available; i++ {
 		index := offset + i
-		if index >= len(s.Data.Clients) {
-			if i == 0 && len(s.Data.Clients) == 0 {
-				box(" Waiting for DNS requests…", 146)
+		if index >= s.rowCount() {
+			if i == 0 && s.rowCount() == 0 {
+				text := " Waiting for DNS requests…"
+				if s.active() {
+					text = " Waiting for activity in completed seconds…"
+				}
+				if s.active() && s.Data.Source != "live" {
+					text = " Activity unavailable: monitor is offline"
+				}
+				if s.active() && s.Data.Source == "live" && h.ActivityLimit == 0 {
+					text = " Activity unavailable: cache disabled or older daemon"
+				}
+				box(text, 146)
 			} else {
 				box("", 255)
 			}
+			continue
+		}
+		if s.active() {
+			c := s.Data.Activity[index]
+			row := fmt.Sprintf(" %-*s %8.1f", ipWidth, cut(c.IP, ipWidth), c.Rate)
+			if inner >= 48 {
+				row += fmt.Sprintf(" %10s", cut(number(strconv.FormatUint(c.Minute, 10)), 10))
+			}
+			if inner >= 64 {
+				row += fmt.Sprintf(" %6.1f%%", c.Share)
+			}
+			color := 255
+			if index == 0 {
+				color = 120
+			}
+			box(row, color)
 			continue
 		}
 		c := s.Data.Clients[index]
@@ -218,7 +283,7 @@ func Render(s State, width, height int) string {
 		}
 		box(row, color)
 	}
-	footer := fmt.Sprintf(" q quit · ↑↓ scroll · space pause · r refresh · c color  %d–%d/%d ", min(len(s.Data.Clients), offset+1), min(len(s.Data.Clients), offset+available), len(s.Data.Clients))
+	footer := fmt.Sprintf(" q quit · ↑↓ scroll · space pause · r refresh · c color · s sort  %d–%d/%d ", min(s.rowCount(), offset+1), min(s.rowCount(), offset+available), s.rowCount())
 	edge(footer)
 	lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
 	return strings.Join(lines, "\r\n")

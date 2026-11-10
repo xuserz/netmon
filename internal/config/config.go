@@ -28,12 +28,15 @@ type Config struct {
 	MaxFragmentBytes  int           `yaml:"max_fragment_bytes"`
 	ReassemblyTimeout time.Duration `yaml:"reassembly_timeout"`
 	TCPIdleTimeout    time.Duration `yaml:"tcp_idle_timeout"`
+	MaxActivityIPs    int           `yaml:"max_activity_ips"`
+	HotCacheIPs       int           `yaml:"hot_cache_ips"`
+	WriteRetryTimeout time.Duration `yaml:"write_retry_timeout"`
 }
 
 func Default() Config {
 	return Config{Interface: "eth0", Port: 53, Database: "/var/lib/dnsmon/stats.db", FlushInterval: 30 * time.Second,
 		MaxPending: 10000, MaxDatabaseMB: 64, MaxWALMB: 16, SocketBufferMB: 2,
-		MaxTCPFlows: 1024, MaxTCPBytes: 8 << 20, MaxFragments: 256, MaxFragmentBytes: 2 << 20, ReassemblyTimeout: 2 * time.Minute, TCPIdleTimeout: 10 * time.Minute}
+		MaxTCPFlows: 1024, MaxTCPBytes: 8 << 20, MaxFragments: 256, MaxFragmentBytes: 2 << 20, ReassemblyTimeout: 2 * time.Minute, TCPIdleTimeout: 10 * time.Minute, HotCacheIPs: 8192, MaxActivityIPs: 10000, WriteRetryTimeout: 30 * time.Second}
 }
 
 func Load(path string, required bool) (Config, error) {
@@ -88,6 +91,15 @@ func (c Config) Validate() error {
 	}
 	if c.TCPIdleTimeout < time.Second || c.TCPIdleTimeout > time.Hour {
 		return errors.New("tcp_idle_timeout must be between 1s and 1h")
+	}
+	if c.MaxActivityIPs < 0 || c.MaxActivityIPs > 100000 {
+		return errors.New("max_activity_ips must be 0..100000")
+	}
+	if c.HotCacheIPs < 0 || c.HotCacheIPs > 1000000 {
+		return errors.New("hot_cache_ips must be 0..1000000")
+	}
+	if c.WriteRetryTimeout < time.Second || c.WriteRetryTimeout > 5*time.Minute {
+		return errors.New("write_retry_timeout must be 1s..5m")
 	}
 	return nil
 }

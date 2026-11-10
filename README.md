@@ -17,8 +17,9 @@ are never written to disk.
 - UDP and TCP DNS over IPv4 and IPv6.
 - TCP stream reassembly, retransmission handling, and bounded IP fragment buffers.
 - Color terminal dashboard with live counters, request rate, CPU, memory, and loss diagnostics.
-- Batched SQLite writes, WAL readers, and configurable memory and database limits.
-- CLI lookup, rankings, totals, CSV export, and startup checks.
+- PACKET_MMAP capture with kernel timestamps and bounded receive-ring memory.
+- Retry-safe SQLite batches, bounded hot-client caching, and database limits.
+- CLI lookup, lifetime and current-activity rankings, isolated CSV export, and startup checks.
 - Static Linux binaries for **amd64** and **arm64**, with SQLite included.
 - Passive capture on one interface, including the host side of Docker-published DNS.
 
@@ -78,6 +79,8 @@ an additional monitor.
 ```sh
 dnsmon top                         # Interactive live dashboard
 dnsmon top -n 100 --interval 1s     # More clients, faster refresh
+dnsmon top --sort rate             # Rank by requests/s over 5 completed seconds
+dnsmon top --sort minute           # Rank by requests over 60 completed seconds
 dnsmon top --once                  # One committed SQLite snapshot
 dnsmon top --no-color
 dnsmon show 192.0.2.10
@@ -102,12 +105,18 @@ Global `--config FILE` and `--db FILE` options can appear before or after the co
 | Space | Pause or resume updates |
 | `r` | Refresh |
 | `c` | Toggle colors |
+| `s` | Cycle total / requests per second / last minute ranking |
 
 The dashboard refreshes every two seconds by default and supports up to 1,000
-rows. `NO_COLOR` disables colors. Redirecting `top` to a file or pipe automatically
+rows. Activity views show per-IP requests/s, requests in the last minute, and
+share of observed traffic. Their bounded RAM cache resets on restart; an
+incomplete sample is marked explicitly. SQLite keeps its original four fields.
+
+`NO_COLOR` disables colors. Redirecting `top` to a file or pipe automatically
 produces a single plain-text snapshot; `--once` selects that mode explicitly.
 
-`LIVE` includes uncommitted counters from the running service. `STORED` uses
+`LIVE` includes uncommitted counters from the running service, published at most
+once per second. `STALE` shows the age of an older snapshot. `STORED` uses
 SQLite when the live feed is unavailable. Commands such as `stats`, `show`,
 `list`, and `export` read committed data and may lag behind the live dashboard.
 
@@ -163,8 +172,7 @@ make check
 python3 -m unittest discover -s scripts/tests -v
 ```
 
-Changes and pull requests are welcome. Include a description of the problem,
-reproduction steps where applicable, and relevant tests. Follow the
+Changes and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Follow the
 [development guide](docs/development.md) for static builds, network integration
 tests, and load testing.
 
@@ -176,7 +184,9 @@ branch publish tested amd64 and arm64 release bundles automatically.
 - [Configuration and capture scope](docs/configuration.md)
 - [Operations, storage, and troubleshooting](docs/operations.md)
 - [Development, testing, and releases](docs/development.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 
-The repository does not currently declare a project license.
+[MIT](LICENSE) © 2026 xuserz. See [third-party notices](THIRD_PARTY_NOTICES.md) for bundled dependencies.

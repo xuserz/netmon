@@ -13,9 +13,14 @@ import (
 )
 
 type Socket struct {
-	fd          int
-	Interface   string
-	BufferBytes int
+	fd                                int
+	Interface                         string
+	BufferBytes                       int
+	ring                              []byte
+	blockSize, blockCount, blockIndex int
+	owned                             bool
+	packets                           uint32
+	packetOffset, blockEnd            int
 }
 
 func htons(v uint16) uint16 {
@@ -52,14 +57,13 @@ func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 			s.Close()
 		}
 	}()
-	for _, opt := range []struct{ level, name, value int }{{unix.SOL_SOCKET, unix.SO_RCVBUF, bufferMB << 20}, {unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1}} {
-		if e = unix.SetsockoptInt(fd, opt.level, opt.name, opt.value); e != nil {
-			return nil, fmt.Errorf("socket option level=%d option=%d: %w", opt.level, opt.name, e)
-		}
-	}
-	if e = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 250000}); e != nil {
+	if e = unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_IGNORE_OUTGOING, 1); e != nil {
 		return nil, e
 	}
+	if e = s.setupRing(bufferMB); e != nil {
+		return nil, e
+	}
+
 	filter := Filter(port)
 	if e = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}); e != nil {
 		return nil, fmt.Errorf("attach BPF: %w", e)
@@ -67,34 +71,8 @@ func Open(name string, port uint16, bufferMB int) (*Socket, error) {
 	if e = unix.Bind(fd, &unix.SockaddrLinklayer{Ifindex: iface.Index, Protocol: htons(unix.ETH_P_ALL)}); e != nil {
 		return nil, e
 	}
-	s.BufferBytes, _ = unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF)
 	ok = true
 	return s, nil
-}
-func (s *Socket) Close() error { return unix.Close(s.fd) }
-func (s *Socket) Read(buf []byte) (int, error) {
-	n, from, e := unix.Recvfrom(s.fd, buf, unix.MSG_TRUNC)
-	if e != nil {
-		if errors.Is(e, unix.EAGAIN) || errors.Is(e, unix.EWOULDBLOCK) || errors.Is(e, unix.EINTR) {
-			return 0, nil
-		}
-		return 0, e
-	}
-	ll, ok := from.(*unix.SockaddrLinklayer)
-	if !ok || ll.Pkttype == unix.PACKET_OUTGOING {
-		return 0, nil
-	}
-	if n > len(buf) {
-		return 0, fmt.Errorf("capture truncated datagram: %d bytes", n)
-	}
-	return n, nil
-}
-func (s *Socket) Drops() (uint32, error) {
-	v, e := unix.GetsockoptTpacketStats(s.fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
-	if e != nil {
-		return 0, e
-	}
-	return v.Drops, nil
 }
 
 // Tiny label assembler keeps BPF offsets reviewable. IPv4 checks port in the

@@ -12,6 +12,7 @@ max_pending_ips: 10000
 max_database_mb: 64
 # WAL checkpoint threshold; may overshoot by one bounded batch (see README).
 max_wal_mb: 16
+# Exact PACKET_MMAP receive-ring allocation in MiB (not SO_RCVBUF).
 socket_buffer_mb: 2
 max_tcp_flows: 1024
 max_tcp_bytes: 8388608
@@ -21,3 +22,11 @@ reassembly_timeout: 2m
 
 # Retain clean persistent TCP connections longer than incomplete reassembly.
 tcp_idle_timeout: 10m
+
+# Confirmed client totals cached by the writer; 0 disables caching.
+hot_cache_ips: 8192
+# Retry transient SQLite failures with the same absolute batch targets.
+write_retry_timeout: 30s
+
+# Maximum IPs in the volatile 5s/60s activity cache; 0 disables it.
+max_activity_ips: 10000

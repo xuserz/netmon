@@ -129,10 +129,13 @@ func run(args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	limit := 20
+	sort := "total"
 	once, watch, noColor := false, false, false
 	interval := 2 * time.Second
 	csvPath := ""
+	exportTimeout := 5 * time.Minute
 	if command == "top" {
+		fs.StringVar(&sort, "sort", "total", "rank by total, rate (5s), or minute (60s)")
 		fs.IntVar(&limit, "n", 20, "number of clients (up to 1000 in live mode)")
 		fs.BoolVar(&once, "once", false, "print one committed SQLite snapshot")
 		fs.BoolVar(&watch, "watch", false, "require an interactive live display")
@@ -141,6 +144,7 @@ func run(args []string, out, errOut io.Writer) error {
 	}
 	if command == "export" {
 		fs.StringVar(&csvPath, "csv", "", "output CSV path")
+		fs.DurationVar(&exportTimeout, "timeout", 5*time.Minute, "maximum snapshot/export duration (1s..24h)")
 	}
 	if e = fs.Parse(rest); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
@@ -162,6 +166,9 @@ func run(args []string, out, errOut io.Writer) error {
 		return errors.New("export requires --csv FILE")
 	}
 	if command == "top" {
+		if sort != "total" && sort != "rate" && sort != "minute" {
+			return errors.New("--sort must be total, rate, or minute")
+		}
 		if once && watch {
 			return errors.New("--once and --watch are mutually exclusive")
 		}
@@ -169,14 +176,27 @@ func run(args []string, out, errOut io.Writer) error {
 			return errors.New("--interval must be 250ms..1m")
 		}
 		if !once && (watch || terminalOutput(out)) {
-			return interactiveTop(out, c.Database, limit, interval, noColor)
+			return interactiveTop(out, c.Database, limit, interval, noColor, sort)
 		}
+	}
+	if command == "top" && sort != "total" {
+		return errors.New("rate/minute ranking requires an interactive live top")
 	}
 	s, e := store.Open(c.Database, false, 0, 0)
 	if e != nil {
 		return fmt.Errorf("open statistics (has the service initialized the database?): %w", e)
 	}
 	defer s.Close()
+	if command == "export" {
+		if exportTimeout < time.Second || exportTimeout > 24*time.Hour {
+			return errors.New("--timeout must be 1s..24h")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		ctx, cancel := context.WithTimeout(ctx, exportTimeout)
+		defer cancel()
+		return export(ctx, s, c.Database, csvPath, out)
+	}
 	tx, e := s.DB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if e != nil {
 		return e
@@ -184,9 +204,6 @@ func run(args []string, out, errOut io.Writer) error {
 	defer tx.Rollback()
 	if command == "show" {
 		return show(tx, fs.Arg(0), out)
-	}
-	if command == "export" {
-		return export(tx, c.Database, csvPath, out)
 	}
 	if command == "top" || command == "list" {
 		query := "SELECT ip,requests,first_seen,last_seen FROM clients ORDER BY requests DESC,ip ASC"
