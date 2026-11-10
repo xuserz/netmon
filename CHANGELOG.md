@@ -51,6 +51,17 @@ tags retroactively.
 
 ### Added
 
+- Capacity-based network history with `retention: 0s` by default. Delete oldest
+  closed minute windows near the SQLite page cap, adjust totals, and retry full
+  transactions without duplicating absolute counters or peer cursors.
+- Durable replicated cleanup boundaries (network protocol v3), preventing stale
+  nodes and forward queues from restoring capacity-evicted observations. Upgrade
+  all members together; a small full node can shorten shared cluster history.
+- Preserve existing data and node identities when disabling positive age expiry.
+  Other policy changes still require a new database.
+- Database/limit, WAL/files size, database-filesystem free space and estimated
+  headroom in live/offline network top and status. Forward stays RAM-only.
+
 - Reviewed offline public DNS preset: 185 exact IPv4/IPv6 endpoint labels from
   14 providers, with profile descriptions and official source links. Seed new
   installs and support explicit `whitelist import-dns` merging; preserve user

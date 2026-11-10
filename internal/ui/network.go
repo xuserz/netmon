@@ -49,14 +49,36 @@ func renderNetwork(s State, width, height int) string {
 	}
 	box(" "+scope+"   "+h.Interface, 120)
 	box(fmt.Sprintf(" Packets %s   IPs %s   Bytes %s", number(strconv.FormatInt(t.Packets, 10)), number(strconv.FormatInt(t.IPs, 10)), bytes(uint64(max(int64(0), t.Bytes)))), 255)
-	box(fmt.Sprintf(" Local %.1f packets/s   CPU %.1f%%   RAM %s", s.Rate, s.CPU, bytes(h.RSSBytes)), 153)
+	if height >= 14 {
+		box(fmt.Sprintf(" Local %.1f packets/s   CPU %.1f%%   RAM %s", s.Rate, s.CPU, bytes(h.RSSBytes)), 153)
+	}
+	u := h.Storage
+	dbLine := " DB metrics unavailable"
+	if h.StorageMode == "forward" {
+		dbLine = " DB disabled · FORWARD / RAM only"
+	} else if u.Enabled && u.DatabaseKnown {
+		dbLine = fmt.Sprintf(" DB %s / %s   WAL %s   Files %s", storageBytes(u.DatabaseBytes), storageBytes(u.LimitBytes), storageBytes(u.WALBytes), storageBytes(u.FilesBytes))
+	}
+	box(dbLine, 146)
+	diskLine := " Disk free unavailable"
+	if u.DiskKnown {
+		diskLine = " Disk free " + storageBytes(u.DiskAvailableBytes)
+		if u.Enabled && u.DatabaseKnown && h.StorageMode != "forward" {
+			diskLine += "   Headroom " + storageBytes(u.HeadroomBytes)
+		}
+	}
+	box(diskLine, 146)
 	box(fmt.Sprintf(" Kernel drops %d   Malformed %d   RAM queue %.1f/%.1f MiB", h.KernelDrops, h.MalformedPackets, float64(h.QueueBytes)/(1<<20), float64(h.QueueLimit)/(1<<20)), 146)
-	box(fmt.Sprintf(" SYN %s   UDP %s   Queue rejects %d   Discarded samples %d", number(strconv.FormatInt(t.SYN, 10)), number(strconv.FormatInt(t.UDP, 10)), h.QueueRejected, h.DiscardedSamples), 146)
+	if height >= 14 {
+		box(fmt.Sprintf(" SYN %s   UDP %s   Queue rejects %d   Discarded samples %d", number(strconv.FormatInt(t.SYN, 10)), number(strconv.FormatInt(t.UDP, 10)), h.QueueRejected, h.DiscardedSamples), 146)
+	}
 	warning := " Suspicion is a decaying heuristic, not a probability or attribution"
 	if s.Error != "" {
 		warning = " ! " + s.Error
 	} else if h.FlushError != "" {
 		warning = " ! " + h.FlushError
+	} else if h.Storage.Error != "" {
+		warning = " ! Storage metrics: " + h.Storage.Error
 	} else if h.DiscardedSamples > 0 {
 		warning = " ! Some RAM observations were discarded; statistics may be incomplete"
 	}
@@ -128,4 +150,24 @@ func renderNetwork(s State, width, height int) string {
 	edge("q quit · ↑↓ scroll · space pause · r refresh · c color · s sort")
 	lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
 	return strings.Join(lines, "\r\n")
+}
+
+func networkPageRows(height int) int {
+	if height >= 14 {
+		return max(1, height-13)
+	}
+	return max(1, height-11)
+}
+
+func storageBytes(n int64) string {
+	n = max(int64(0), n)
+	for _, unit := range []struct {
+		size int64
+		name string
+	}{{1 << 40, "TiB"}, {1 << 30, "GiB"}, {1 << 20, "MiB"}, {1 << 10, "KiB"}} {
+		if n >= unit.size {
+			return fmt.Sprintf("%.1f %s", float64(n)/float64(unit.size), unit.name)
+		}
+	}
+	return fmt.Sprintf("%d B", n)
 }

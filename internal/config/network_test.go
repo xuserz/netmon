@@ -28,6 +28,7 @@ func TestNetworkRolesAndBounds(t *testing.T) {
 		func(c *Config) { c.Storage.Mode = "unknown" },
 		func(c *Config) { c.Storage.QueueMemoryMB = 0 },
 		func(c *Config) { c.Storage.Retention = 30 * time.Minute },
+		func(c *Config) { c.Storage.Retention = -time.Second },
 		func(c *Config) { c.Network.Rating.HalfLife = 0 },
 		func(c *Config) { c.Network.Rating.ScanPorts = 17 },
 		func(c *Config) { c.Network.Ports = []uint16{0} },

@@ -38,8 +38,8 @@ func (c Config) validateNetwork() error {
 	if c.Storage.Mode != "full" && c.Storage.Mode != "forward" {
 		return errors.New("storage.mode must be full or forward")
 	}
-	if c.Storage.Retention < time.Hour || c.Storage.Retention > 30*24*time.Hour {
-		return errors.New("storage.retention must be 1h..720h")
+	if c.Storage.Retention != 0 && (c.Storage.Retention < time.Hour || c.Storage.Retention > 30*24*time.Hour) {
+		return errors.New("storage.retention must be 0s (capacity only) or 1h..720h")
 	}
 	if c.Storage.QueueMemoryMB < 1 || c.Storage.QueueMemoryMB > 256 {
 		return errors.New("storage.queue_memory_mb must be 1..256")

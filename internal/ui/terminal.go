@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"netmon/internal/live"
 	"golang.org/x/sys/unix"
+	"netmon/internal/live"
 )
 
 func IsTerminal(f *os.File) bool {
@@ -162,7 +162,11 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 	defer ticker.Stop()
 	render := func() error {
 		w, h := size()
-		state.Offset = max(0, min(state.Offset, max(0, state.rowCount()-max(1, h-11))))
+		visible := max(1, h-11)
+		if state.Data.Network {
+			visible = networkPageRows(h)
+		}
+		state.Offset = max(0, min(state.Offset, max(0, state.rowCount()-visible)))
 		_, e := fmt.Fprint(opt.Out, "\x1b[H", Render(state, w, h))
 		return e
 	}
@@ -279,10 +283,18 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				state.Offset = max(0, state.Offset-1)
 			case "page_down":
 				_, h := size()
-				state.Offset = min(max(0, state.rowCount()-1), state.Offset+max(1, h-12))
+				step := max(1, h-12)
+				if state.Data.Network {
+					step = networkPageRows(h)
+				}
+				state.Offset = min(max(0, state.rowCount()-1), state.Offset+step)
 			case "page_up":
 				_, h := size()
-				state.Offset = max(0, state.Offset-max(1, h-12))
+				step := max(1, h-12)
+				if state.Data.Network {
+					step = networkPageRows(h)
+				}
+				state.Offset = max(0, state.Offset-step)
 			case "home":
 				state.Offset = 0
 			case "end":

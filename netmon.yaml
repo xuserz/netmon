@@ -20,8 +20,9 @@ max_activity_ips: 10000
 storage:
   # full: store and replicate statistics; forward: RAM-only sender, requires peers.
   mode: full
-  # Same retention and rating policy are required on every cluster member.
-  retention: 24h
+  # 0s = no age expiry; oldest closed minute windows are removed at DB capacity.
+  # Same retention and rating policy are required on EVERY member, including forward.
+  retention: 0s
   queue_memory_mb: 8
 
 network:

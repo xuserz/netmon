@@ -119,7 +119,7 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"Unique IPs: 100", output)
         self.assertEqual(output.count(b"192.0.2."), 3)
 
-    def live_server(self, slow=False, network=False):
+    def live_server(self, slow=False, network=False, storage=None, network_rows=None):
         listener = socket.socket(socket.AF_UNIX)
         try:
             if network:
@@ -167,6 +167,11 @@ class TerminalTests(unittest.TestCase):
                                 "network_totals": {"ips": 1, "packets": 777777, "bytes": 77777700},
                                 "network_ips": [{"ip": "192.0.2.77", "packets": 777777,
                                                  "bytes": 77777700, "syn": 12345, "suspicion": 85}]}
+                        if network and storage is not None:
+                            response["health"]["storage_mode"] = "full"
+                            response["health"]["storage"] = storage
+                        if network and network_rows is not None:
+                            response["network_ips"] = network_rows
                         conn.sendall(json.dumps(response).encode() + b"\n")
                     except OSError:
                         pass
@@ -279,4 +284,24 @@ class TerminalTests(unittest.TestCase):
         result = subprocess.run([str(BINARY), "--config", str(config), "whitelist", "remove", "192.0.2.77"],
                                 capture_output=True, text=True, timeout=4)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.quit_and_verify_restore()
+
+    def test_network_storage_space_updates_and_end_reaches_last_ip(self):
+        storage = {"enabled": True, "database_known": True, "disk_known": True,
+                   "database_bytes": 2 << 20, "limit_bytes": 20 << 30,
+                   "wal_bytes": 1 << 20, "files_bytes": 3 << 20,
+                   "disk_available_bytes": 30 << 30, "headroom_bytes": 19 << 30}
+        rows = [{"ip": f"192.0.2.{i}", "packets": 1000-i} for i in range(1, 101)]
+        self.live_server(network=True, storage=storage, network_rows=rows)
+        config = Path(self.temp.name) / "network.yaml"
+        config.write_text(f"mode: network\nlabels_file: \"\"\nstorage:\n  mode: full\nnetwork:\n  runtime_directory: {Path(self.temp.name) / 'run'}\n")
+        self.start("--config", str(config), wait_for=b"192.0.2.1")
+        for text in (b"DB 2.0 MiB / 20.0 GiB", b"WAL 1.0 MiB", b"Disk free 30.0 GiB", b"Headroom 19.0 GiB"):
+            self.until(text)
+        storage["disk_available_bytes"] = 29 << 30
+        self.data = b""
+        self.until(b"Disk free 29.0 GiB")
+        self.data = b""
+        os.write(self.master, b"\x1b[F")
+        self.until(b"192.0.2.100")
         self.quit_and_verify_restore()

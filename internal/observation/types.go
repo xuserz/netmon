@@ -105,7 +105,7 @@ func (s Sample) Validate(now time.Time, retention time.Duration) error {
 	if !ValidID(s.ID) || !ValidID(s.Node) || e != nil || ip.Zone() != "" || ip.Unmap().String() != s.IP || len(s.Name) > 128 || InvalidName(s.Name) {
 		return fmt.Errorf("invalid observation identity")
 	}
-	if s.Window < 0 || s.Window%60 != 0 || s.First < s.Window || s.Last < s.First || s.Last >= s.Window+60 || s.Last > now.Unix()+300 || s.Window+60 <= now.Add(-retention).Unix() {
+	if s.Window < 0 || s.Window%60 != 0 || s.First < s.Window || s.Last < s.First || s.Last >= s.Window+60 || s.Last > now.Unix()+300 || (retention > 0 && s.Window+60 <= now.Add(-retention).Unix()) {
 		return fmt.Errorf("observation outside its minute/retention window")
 	}
 	c := s.Counters

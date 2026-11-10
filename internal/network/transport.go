@@ -24,7 +24,7 @@ import (
 	"netmon/internal/observation"
 )
 
-const wireVersion = 2
+const wireVersion = 3
 const maxWire = 2 << 20
 
 type message struct {
@@ -159,6 +159,9 @@ func (t *transport) validate(m message) error {
 	if m.Version != wireVersion || m.Mode != "network" || m.PolicyVersion != observation.PolicyVersion || m.Policy != Policy(t.cfg) || m.Retention != int64(t.cfg.Storage.Retention/time.Second) {
 		return errors.New("network mode, rating policy, or retention differs between nodes")
 	}
+	if m.Floor < 0 || m.Floor%60 != 0 || m.Floor > time.Now().Unix()+300 {
+		return errors.New("invalid storage floor")
+	}
 	if !observation.ValidID(m.Node) || len(m.Name) > 128 || observation.InvalidName(m.Name) || (m.Role != "full" && m.Role != "forward") || len(m.Peers) > config.MaxClusterPeers || len(m.Samples) > 128 {
 		return errors.New("invalid network peer message")
 	}
@@ -213,7 +216,7 @@ func (t *transport) send(ctx context.Context, items []pending) error {
 	}
 	for _, p := range peers {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		reply, e := t.request(requestCtx, p, "/v2/network/ingest", m)
+		reply, e := t.request(requestCtx, p, "/v3/network/ingest", m)
 		cancel()
 		p.Error = limitedError(e)
 		if e == nil {
@@ -242,7 +245,7 @@ func (t *transport) sync(ctx context.Context) {
 			m.Page.Epoch = p.Epoch
 			m.Page.Cursor = p.Cursor
 			requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			reply, e := t.request(requestCtx, p, "/v2/network/exchange", m)
+			reply, e := t.request(requestCtx, p, "/v3/network/exchange", m)
 			cancel()
 			if e == nil {
 				if !observation.ValidID(reply.Epoch) || reply.Cursor < 0 || reply.Cursor > reply.Head || reply.Epoch == p.Epoch && reply.Cursor < p.Cursor {
@@ -280,13 +283,13 @@ func (t *transport) applyPage(ctx context.Context, previous Peer, reply message)
 	next.Cursor = reply.Cursor
 	next.Success = time.Now().Unix()
 	next.Error = ""
-	if e := t.store.Merge(ctx, reply.Samples, &next); e != nil {
+	if e := t.store.mergePage(ctx, reply.Samples, &next, reply.Floor); e != nil {
 		return previous, e
 	}
 	return next, nil
 }
 func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" || (r.URL.Path != "/v2/network/ingest" && r.URL.Path != "/v2/network/exchange") {
+	if r.Method != "POST" || (r.URL.Path != "/v3/network/ingest" && r.URL.Path != "/v3/network/exchange") {
 		http.NotFound(w, r)
 		return
 	}
@@ -320,7 +323,7 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		t.discover(m.Advertise)
 	}
 	reply := t.envelope()
-	if r.URL.Path == "/v2/network/ingest" {
+	if r.URL.Path == "/v3/network/ingest" {
 		for _, s := range m.Samples {
 			if s.Node != m.Node {
 				http.Error(w, "ingest source differs from certificate", 403)

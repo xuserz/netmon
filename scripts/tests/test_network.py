@@ -51,7 +51,7 @@ class NetworkTests(unittest.TestCase):
         config = directory / "config.yaml"
         config.write_text(f"mode: network\nlabels_file: {directory / 'labels.yaml'}\ninterface: lo\ndatabase: {database}\nflush_interval: 1s\n"
                           "max_database_mb: 16\nmax_activity_ips: 64\n"
-                          f"storage:\n  mode: {role}\n  retention: 24h\n  queue_memory_mb: 1\n"
+                          f"storage:\n  mode: {role}\n  retention: 0s\n  queue_memory_mb: 1\n"
                           f"network:\n  capture: {str(capture).lower()}\n  runtime_directory: {runtime}\n"
                           f"  ports: [{self.port}]\n"
                           f"cluster:\n  enabled: true\n  name: {name}\n  key_file: {self.key}\n"
@@ -259,3 +259,59 @@ class NetworkTests(unittest.TestCase):
         self.assertNotIn("Uptime Kuma", result.stdout)
         self.assertIn("DNS node EU", result.stdout)
         self.assertEqual(self.total(node), 100)
+
+    def test_capacity_cutoff_propagates_over_tls_and_storage_metrics_are_read_only(self):
+        a_port, b_port, agent_port = self.reserve(), self.reserve(), self.reserve()
+        a = self.node("storage-a", "full", a_port, [])
+        b = self.node("storage-b", "full", b_port, [f"https://127.0.0.1:{a_port}"])
+        agent = self.node("agent", "forward", agent_port, [f"https://127.0.0.1:{a_port}"], capture=True)
+        for node in self.nodes:
+            self.start(node)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.sendto(b"one observation", ("127.0.0.1", self.port))
+        self.wait_for(lambda: self.total(a) == 1 and self.total(b) == 1)
+        self.wait_for(lambda: self.rpc(a, "health")["health"]["storage"]["database_known"])
+        usage = self.rpc(a, "health")["health"]["storage"]
+        self.assertGreater(usage["database_bytes"], 0)
+        self.assertEqual(usage["limit_bytes"], 16 << 20)
+        self.assertGreater(usage["files_bytes"], 0)
+        self.assertGreater(usage["disk_available_bytes"], 0)
+        self.assertLessEqual(usage["headroom_bytes"], usage["disk_available_bytes"])
+        self.assertFalse(self.rpc(agent, "health")["health"]["storage"]["enabled"])
+        self.stop(agent)
+        self.assertFalse(agent["database"].parent.exists())
+        for node in (a, b):
+            self.stop(node)
+        # Model closed observations without delaying the process test by minutes.
+        old_window = int(time.time()) // 60 * 60 - 120
+        for node in (a, b):
+            with closing(sqlite3.connect(str(node["database"]) + ".network.db")) as db, db:
+                rows = db.execute("SELECT id,payload FROM net_observations").fetchall()
+                for identity, raw in rows:
+                    payload = json.loads(raw)
+                    payload.update(window=old_window, first_seen=old_window, last_seen=old_window)
+                    db.execute("UPDATE net_observations SET window=?,payload=? WHERE id=?",
+                               (old_window, json.dumps(payload).encode(), identity))
+                db.execute("UPDATE net_ips SET first=?,last=?", (old_window, old_window))
+                if node is a:
+                    # This is the durable result of capacity eviction, tested
+                    # with actual page limits in the Go storage stress tests.
+                    db.execute("UPDATE net_storage SET floor=?", (old_window + 60,))
+                    db.execute("UPDATE net_meta SET sequence=sequence+1")
+        for node in (a, b):
+            self.start(node)
+        self.wait_for(lambda: self.total(a) == 0 and self.total(b) == 0)
+        for node in (a, b):
+            with closing(sqlite3.connect(str(node["database"]) + ".network.db")) as db:
+                self.assertEqual(db.execute("SELECT floor FROM net_storage").fetchone()[0], old_window + 60)
+                self.assertEqual(db.execute("SELECT count(*) FROM net_observations").fetchone()[0], 0)
+        self.stop(b)
+        self.start(b)
+        time.sleep(1.1)
+        self.assertEqual(self.total(b), 0)
+        self.stop(a)
+        result = self.command(a, "top", "--once")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Database:", result.stdout)
+        self.assertIn("Disk available:", result.stdout)
+        self.assertIn("Estimated write headroom", result.stdout)

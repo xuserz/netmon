@@ -35,7 +35,7 @@ func networkFetch(ctx context.Context, c config.Config, kind string, n int, loca
 	if e != nil {
 		return live.Response{}, e
 	}
-	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode}}, nil
+	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode, Storage: network.StorageUsage(ctx, c)}}, nil
 }
 func printNetworkRow(w io.Writer, r observation.IP) error {
 	_, e := fmt.Fprintf(w, "%-39s %5d %16s %16s %12s %-9s %s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)), r.Tag(), r.Label())
@@ -163,6 +163,19 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		}
 		h := r.Health
 		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nPeers online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
+		printNetworkStorage(out, h)
+
+		if h.StorageMode == "full" {
+			retention := "unlimited age; oldest windows removed at capacity"
+			if h.RetentionSeconds > 0 {
+				retention = (time.Duration(h.RetentionSeconds) * time.Second).String()
+			}
+			floor := "none"
+			if h.StorageFloor > 0 {
+				floor = time.Unix(h.StorageFloor, 0).Format(time.RFC3339)
+			}
+			fmt.Fprintf(out, "Retention: %s\nStorage cutoff: %s\nPruned observations: %d\n", retention, floor, h.PrunedObservations)
+		}
 		if h.FlushError != "" {
 			return errors.New(h.FlushError)
 		}
@@ -251,5 +264,26 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		printNetworkRows(out, r.NetworkIPs)
 	}
 	printNetworkTotals(out, r)
+	if command == "top" {
+		printNetworkStorage(out, r.Health)
+	}
 	return nil
+}
+
+func printNetworkStorage(out io.Writer, h live.Health) {
+	u := h.Storage
+	if h.StorageMode == "forward" {
+		fmt.Fprintln(out, "Database: disabled (forward / RAM only)")
+	} else if u.Enabled && u.DatabaseKnown {
+		fmt.Fprintf(out, "Database: %.2f MiB / %.0f MiB limit; WAL: %.2f MiB; files: %.2f MiB\n", float64(u.DatabaseBytes)/(1<<20), float64(u.LimitBytes)/(1<<20), float64(u.WALBytes)/(1<<20), float64(u.FilesBytes)/(1<<20))
+	}
+	if u.DiskKnown {
+		fmt.Fprintf(out, "Disk available: %.2f MiB\n", float64(u.DiskAvailableBytes)/(1<<20))
+		if u.Enabled && u.DatabaseKnown {
+			fmt.Fprintf(out, "Estimated write headroom before cleanup: %.2f MiB\n", float64(u.HeadroomBytes)/(1<<20))
+		}
+	}
+	if u.Error != "" {
+		fmt.Fprintf(out, "Storage metrics error: %s\n", u.Error)
+	}
 }

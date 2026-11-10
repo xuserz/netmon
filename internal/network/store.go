@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/mattn/go-sqlite3"
 	"netmon/internal/config"
 	"netmon/internal/observation"
 	"netmon/internal/store"
@@ -50,6 +51,7 @@ type Page struct {
 	Epoch   string               `json:"epoch"`
 	Cursor  int64                `json:"cursor"`
 	Head    int64                `json:"head"`
+	Floor   int64                `json:"storage_floor"`
 	Samples []observation.Sample `json:"samples"`
 }
 
@@ -78,6 +80,8 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 			`CREATE INDEX IF NOT EXISTS net_changes ON net_observations(version)`,
 			`CREATE INDEX IF NOT EXISTS net_ip_observations ON net_observations(ip,priority DESC)`,
 			`CREATE INDEX IF NOT EXISTS net_expiry ON net_observations(window)`,
+			`CREATE TABLE IF NOT EXISTS net_storage(id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,evicted INTEGER NOT NULL)`,
+			`INSERT OR IGNORE INTO net_storage VALUES(1,0,0)`,
 			`CREATE TABLE IF NOT EXISTS net_totals(id INTEGER PRIMARY KEY CHECK(id=1),ips INTEGER NOT NULL,packets INTEGER NOT NULL,bytes INTEGER NOT NULL,tcp INTEGER NOT NULL,syn INTEGER NOT NULL,udp INTEGER NOT NULL,icmp INTEGER NOT NULL)`,
 			`INSERT OR IGNORE INTO net_totals VALUES(1,0,0,0,0,0,0,0)`,
 			`CREATE TABLE IF NOT EXISTS net_ips(ip TEXT PRIMARY KEY,packets INTEGER NOT NULL,bytes INTEGER NOT NULL,tcp INTEGER NOT NULL,syn INTEGER NOT NULL,udp INTEGER NOT NULL,icmp INTEGER NOT NULL,first INTEGER NOT NULL,last INTEGER NOT NULL,peak INTEGER NOT NULL,evidence BLOB NOT NULL,priority REAL NOT NULL,partial INTEGER NOT NULL) WITHOUT ROWID`,
@@ -105,7 +109,19 @@ func openDisk(c config.Config, write bool) (*disk, error) {
 		return nil, e
 	}
 	expected, _ := json.Marshal(s.policy)
-	if policy != string(expected) || retention != int64(s.retention/time.Second) {
+	if policy != string(expected) {
+		return nil, errors.New("network rating policy differs from this database; use a new database for another policy")
+	}
+	if retention != int64(s.retention/time.Second) && s.retention == 0 && retention > 0 {
+		// Disabling age expiry preserves all surviving observations and node identity.
+		if write {
+			if _, e = w.DB.Exec("UPDATE net_meta SET retention=0 WHERE id=1"); e != nil {
+				return nil, e
+			}
+		}
+		retention = 0
+	}
+	if retention != int64(s.retention/time.Second) {
 		return nil, errors.New("network rating policy/retention differ from this database; use a new database for another policy")
 	}
 	if write {
@@ -156,13 +172,85 @@ func mergeSample(old, next observation.Sample, p observation.Policy) (observatio
 	return next, nil
 }
 func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer) error {
+	return s.mergePage(ctx, items, peer, 0)
+}
+func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *Peer, floor int64) error {
+	if floor < 0 || floor%60 != 0 || floor > time.Now().Unix()+300 {
+		return errors.New("invalid storage floor")
+	}
+	if len(items) > 128 {
+		return errors.New("network page exceeds 128 observations")
+	}
+	// Validate before any capacity deletion: malformed input cannot evict history.
+	now := time.Now()
+	identities := map[string]observation.Sample{}
+	for _, item := range items {
+		if s.retention > 0 && item.Window+60 <= now.Add(-s.retention).Unix() {
+			continue
+		}
+		if e := item.Validate(now, s.retention); e != nil {
+			return e
+		}
+		if _, e := mergeSample(identities[item.ID], item, s.policy); e != nil {
+			return e
+		}
+		identities[item.ID] = item
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.w.EnsureWAL(ctx); e != nil {
+		return e
+	}
+
+	for {
+		var changed bool
+		e := s.mergeOnce(ctx, items, peer, floor, &changed)
+		if e == nil {
+			// Reserve space after a committed change; stale/no-op replay must never
+			// trigger new eviction simply because this replica is near capacity.
+			if !changed {
+				return nil
+			}
+			if floor > 0 {
+				if _, err := s.pruneLocked(ctx, false); err != nil {
+					return err
+				}
+			}
+			pressure, err := s.capacityPressure(ctx)
+			if err != nil {
+				return err
+			}
+			if pressure {
+				_, err = s.pruneLocked(ctx, true)
+			}
+			return err
+		}
+		var sqliteErr sqlite3.Error
+		if !errors.As(e, &sqliteErr) || sqliteErr.Code != sqlite3.ErrFull {
+			return e
+		}
+		// SQLITE_FULL rolls back the batch. Free old committed windows in a separate
+		// transaction, then replay the same absolute counters and cursor safely.
+		n, pruneErr := s.pruneLocked(ctx, true)
+		if pruneErr != nil {
+			return pruneErr
+		}
+		if n == 0 {
+			return e
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+}
+func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, changed *bool) error {
 	if len(items) > 128 {
 		return errors.New("network page exceeds 128 observations")
 	}
 	now := time.Now()
-	filtered := items[:0]
+	filtered := make([]observation.Sample, 0, len(items))
 	for _, item := range items {
-		if item.Window+60 > now.Add(-s.retention).Unix() {
+		if s.retention == 0 || item.Window+60 > now.Add(-s.retention).Unix() {
 			filtered = append(filtered, item)
 		}
 	}
@@ -172,11 +260,6 @@ func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer
 			return e
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if e := s.w.EnsureWAL(ctx); e != nil {
-		return e
-	}
 	tx, e := s.w.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -185,6 +268,19 @@ func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer
 	var seq int64
 	if e = tx.QueryRowContext(ctx, "SELECT sequence FROM net_meta WHERE id=1").Scan(&seq); e != nil {
 		return e
+	}
+	originalSequence := seq
+	var storedFloor int64
+	if e = tx.QueryRowContext(ctx, "SELECT floor FROM net_storage WHERE id=1").Scan(&storedFloor); e != nil {
+		return e
+	}
+	if floor > storedFloor {
+		if _, e = tx.ExecContext(ctx, "UPDATE net_storage SET floor=? WHERE id=1", floor); e != nil {
+			return e
+		}
+		seq++
+	} else {
+		floor = storedFloor
 	}
 	totals, e := readTotals(ctx, tx)
 	if e != nil {
@@ -206,6 +302,9 @@ func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer
 		defer stmt.Close()
 	}
 	for _, item := range items {
+		if item.Window < floor {
+			continue
+		}
 		var raw []byte
 		var old observation.Sample
 		e = stmts[0].QueryRowContext(ctx, item.ID).Scan(&raw)
@@ -274,7 +373,11 @@ func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer
 			return e
 		}
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	*changed = seq != originalSequence
+	return nil
 }
 
 const ipColumns = "ip,packets,bytes,tcp,syn,udp,icmp,first,last,peak,evidence,partial"
@@ -366,7 +469,14 @@ func (s *disk) Page(ctx context.Context, epoch string, after int64) (Page, error
 	if after > page.Head {
 		return page, errors.New("peer restored an older replica; rebuild its network database")
 	}
-	rows, e := tx.QueryContext(ctx, "SELECT payload,version FROM net_observations WHERE version>? AND version<=? AND window>? ORDER BY version LIMIT 128", after, page.Head, time.Now().Add(-s.retention).Unix()-60)
+	if e = tx.QueryRowContext(ctx, "SELECT floor FROM net_storage WHERE id=1").Scan(&page.Floor); e != nil {
+		return page, e
+	}
+	minimum := page.Floor
+	if s.retention > 0 {
+		minimum = max(minimum, time.Now().Add(-s.retention).Unix()-59)
+	}
+	rows, e := tx.QueryContext(ctx, "SELECT payload,version FROM net_observations WHERE version>? AND version<=? AND window>=? ORDER BY version LIMIT 128", after, page.Head, minimum)
 	if e != nil {
 		return page, e
 	}
@@ -404,12 +514,61 @@ func (s *disk) Prune(ctx context.Context) (int, error) {
 	if e := s.w.EnsureWAL(ctx); e != nil {
 		return 0, e
 	}
+	return s.pruneLocked(ctx, false)
+}
+
+// capacityPressure reserves at most 256 KiB (5% for small databases). Ordinary
+// writes still have SQLite's hard max_page_count guard; WAL is bounded separately.
+func (s *disk) capacityPressure(ctx context.Context) (bool, error) {
+	var count, free, limit, size int64
+	for q, dst := range map[string]*int64{"PRAGMA page_count": &count, "PRAGMA freelist_count": &free, "PRAGMA max_page_count": &limit, "PRAGMA page_size": &size} {
+		if e := s.w.DB.QueryRowContext(ctx, q).Scan(dst); e != nil {
+			return false, e
+		}
+	}
+	reserve := min(int64(256<<10)/size, max(int64(1), limit/20))
+	return count-free >= limit-reserve, nil
+}
+func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 	tx, e := s.w.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return 0, e
 	}
 	defer tx.Rollback()
-	rows, e := tx.QueryContext(ctx, "SELECT id,ip,payload FROM net_observations WHERE window<=? LIMIT 128", time.Now().Add(-s.retention).Unix()-60)
+	var floor int64
+	if e = tx.QueryRowContext(ctx, "SELECT floor FROM net_storage WHERE id=1").Scan(&floor); e != nil {
+		return 0, e
+	}
+	minimum := floor
+	if s.retention > 0 {
+		minimum = max(minimum, time.Now().Add(-s.retention).Unix()-59)
+	}
+	if capacity {
+		var oldest int64
+		e = tx.QueryRowContext(ctx, "SELECT window FROM net_observations ORDER BY window LIMIT 1").Scan(&oldest)
+		if errors.Is(e, sql.ErrNoRows) {
+			return 0, nil
+		}
+		if e != nil {
+			return 0, e
+		}
+		if oldest >= minimum {
+			// Never expire the still-active capture minute. If a single minute cannot
+			// fit, keep the bounded queue/backpressure visible until a minute is eligible.
+			if oldest >= time.Now().Unix()/60*60 {
+				return 0, nil
+			}
+			minimum = oldest + 60
+			floor = max(floor, minimum)
+			if _, e = tx.ExecContext(ctx, "UPDATE net_storage SET floor=? WHERE id=1", floor); e != nil {
+				return 0, e
+			}
+			if _, e = tx.ExecContext(ctx, "UPDATE net_meta SET sequence=sequence+1 WHERE id=1"); e != nil {
+				return 0, e
+			}
+		}
+	}
+	rows, e := tx.QueryContext(ctx, "SELECT id,ip,payload FROM net_observations WHERE window<? ORDER BY window,id LIMIT 128", minimum)
 	if e != nil {
 		return 0, e
 	}
@@ -477,6 +636,9 @@ func (s *disk) Prune(ctx context.Context) (int, error) {
 		}
 	}
 	if e = writeTotals(ctx, tx, totals); e != nil {
+		return 0, e
+	}
+	if _, e = tx.ExecContext(ctx, "UPDATE net_storage SET evicted=evicted+? WHERE id=1", len(ids)); e != nil {
 		return 0, e
 	}
 	return len(ids), tx.Commit()

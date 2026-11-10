@@ -15,7 +15,8 @@ multiple servers with encrypted peer-to-peer synchronization.
 - Color terminal dashboard with live refresh, rankings, CPU, RAM, and loss diagnostics.
 - **Full nodes** store shared statistics in SQLite and synchronize with other full nodes.
 - **Forward nodes** capture and send observations using bounded RAM, without a local statistics database.
-- Configurable retention, receive-ring memory, queue capacity, and database limits.
+- Keep history until the database fills, then remove oldest minute windows first.
+- Live database/WAL size, capacity, filesystem free space and write headroom.
 - Passive PACKET_MMAP capture before Docker NAT; no firewall changes or automatic blocking.
 - Static **amd64/arm64** releases with SQLite included; Go is not required on the server.
 - Legacy DNS query accounting remains available through `mode: dns`.
@@ -66,7 +67,7 @@ mode: network
 interface: ens3
 storage:
   mode: full
-  retention: 24h
+  retention: 0s
 ```
 
 Then start the service:
@@ -177,7 +178,19 @@ cluster:
 ```
 
 Forward nodes make outbound connections and do not need an advertised listener.
-Use the same secret key, retention, and rating settings across members. A full
+With `retention: 0s`, history has no age limit. As `max_database_mb` is reached,
+full nodes remove the oldest closed minute windows first, update totals, and
+reuse SQLite pages. The cleanup boundary propagates to all full nodes so stale
+replicas cannot restore deleted history. A smaller full node can therefore
+shorten the shared history for the cluster. WAL space is additional.
+
+`top` shows DB size/limit, WAL and total file sizes, filesystem free space, and
+estimated write headroom before cleanup. On a forward node, it shows **DB
+disabled** and a local RAM sample: IPs remain until cache eviction or restart,
+not for a fixed retention period. View the full node for saved cluster history.
+
+Use the same secret key, retention, and rating settings across members, including
+forward nodes. A full
 node can set `network.capture: false` to serve only as storage.
 
 Forwarding waits for a durable acknowledgement from one full node; replication
@@ -192,7 +205,8 @@ configurations, rating rules, failure behavior, and migration instructions.
 
 See [netmon.yaml](netmon.yaml) and the [configuration reference](docs/configuration.md).
 After editing the configuration, run `netmon check --startup` and restart the service.
-The default retained window is 24 hours; database capacity must match your traffic.
+History has no age limit by default; the database cap controls when oldest windows
+are removed. Explicit positive retention values still expire observations by age.
 For a 20 GiB main-database cap, set `max_database_mb: 20480`; WAL is additional.
 
 Update:

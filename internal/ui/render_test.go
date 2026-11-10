@@ -124,3 +124,29 @@ func TestNetworkDescriptionsAndTrustTagsStayVisibleWithoutMaskingRisk(t *testing
 		t.Fatal(output)
 	}
 }
+
+func TestNetworkStorageMetricsRemainVisibleAtSmallHeights(t *testing.T) {
+	s := State{Data: live.Response{Network: true, Health: live.Health{StorageMode: "full", Storage: live.StorageUsage{Enabled: true, DatabaseKnown: true, DiskKnown: true, DatabaseBytes: 2 << 20, LimitBytes: 20480 << 20, WALBytes: 1 << 20, FilesBytes: 3 << 20, DiskAvailableBytes: 30 << 30, HeadroomBytes: 20 << 30}}}}
+	for _, size := range [][2]int{{50, 12}, {80, 13}, {80, 14}, {110, 24}} {
+		out := ansi.ReplaceAllString(Render(s, size[0], size[1]), "")
+		lines := strings.Split(out, "\r\n")
+		if len(lines) != size[1] {
+			t.Fatal(size, len(lines))
+		}
+		for _, line := range lines {
+			if len([]rune(line)) != size[0] {
+				t.Fatal(size, line)
+			}
+		}
+		for _, want := range []string{"DB ", "WAL ", "Disk free", "Headroom"} {
+			if !strings.Contains(out, want) {
+				t.Fatal(size, want, out)
+			}
+		}
+	}
+	s.Data.Health.StorageMode = "forward"
+	out := Render(s, 80, 24)
+	if !strings.Contains(out, "DB disabled") || strings.Contains(out, "Headroom") {
+		t.Fatal(out)
+	}
+}

@@ -71,7 +71,8 @@ catalog preservation during upgrades, and unchanged counters/risk after labeling
 
 Network-mode tests additionally cover deterministic score tiers/decay, bounded
 queues, old ACKs racing with coalesced updates, eviction without count loss,
-retention/replay, transaction rollback, and policy mismatch. Process tests start
+retention/replay, capacity eviction/SQLite-full retry, durable replicated cutoffs,
+in-place age-expiry migration, storage metrics, transaction rollback, and policy mismatch. Process tests start
 RAM-only senders and storage replicas, send non-DNS traffic, interrupt storage,
 restart replicas, and verify delivered counters, reasons, CSV, and no sender DB.
 

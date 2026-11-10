@@ -66,7 +66,7 @@ func (q *memoryQueue) peek(n int, retention time.Duration) []pending {
 	for at := q.order.Front(); at != nil && len(out) < n; {
 		next := at.Next()
 		p := at.Value.(pending)
-		if p.sample.Window+60 <= time.Now().Add(-retention).Unix() {
+		if retention > 0 && p.sample.Window+60 <= time.Now().Add(-retention).Unix() {
 			delete(q.items, p.sample.ID)
 			q.bytes -= len(p.raw) + 256
 			q.order.Remove(at)

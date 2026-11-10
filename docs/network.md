@@ -143,7 +143,7 @@ socket_buffer_mb: 4
 max_activity_ips: 10000
 storage:
   mode: full
-  retention: 24h
+  retention: 0s
   queue_memory_mb: 8
 network:
   capture: true
@@ -202,7 +202,8 @@ cluster:
 ```
 
 On B use its own name/address and A as a peer. Full nodes discover peer addresses
-and keep a durable copy of all observations within retention. They pull updates
+and keep a durable copy of observations above the shared cleanup boundary,
+subject to any optional age retention. They pull updates
 without a primary; up to 32 peer addresses are supported. For a storage-only
 node set:
 
@@ -232,7 +233,7 @@ flush_interval: 5s
 max_activity_ips: 10000
 storage:
   mode: forward
-  retention: 24h
+  retention: 0s
   queue_memory_mb: 8
 cluster:
   enabled: true
@@ -279,36 +280,73 @@ in this mode. Query a full node for shared history or CSV export.
 
 ## Retention, consistency, and capacity
 
-By default, network statistics cover retained minute windows for 24 hours, not
-all-time DNS totals. Full nodes coalesce cumulative snapshots per observation ID,
-source IP, and minute. Independent source contributions add; repeat delivery and
-out-of-order cumulative updates merge by maxima without adding twice. Cache
-eviction creates a new disjoint observation ID. This avoids an unbounded event
-log on forwarding nodes. Two independent sensors seeing the same physical
-packet still count two observations; choose observation boundaries accordingly.
+Network history defaults to **`storage.retention: 0s`**: observations do not
+expire by age. You may opt into `1h..720h` age expiry; explicitly configured
+positive values remain active after an upgrade. Every cluster member, including
+RAM-only forward nodes, must agree on retention and rating policy.
 
-Full nodes expire minute windows in small transactions, normally checked each
-minute; backlog can delay cleanup. Counter totals subtract expired windows and
-IPs disappear once no observations remain. First/last timestamps and peak PPS
-for a continuously retained IP are historical summaries; they are not recomputed
-when an older minute expires. Rating evidence is selected from retained windows.
-Do not use first-seen as an exact start of the current retention period.
+`max_database_mb` is a hard SQLite main-page cap, including indexes. As live page
+usage approaches it, the writer frees the oldest **closed minute windows**
+first. A small cleanup reserve is at most 256 KiB (5% for small databases).
+`SQLITE_FULL` rolls back the incoming batch; the writer deletes old windows in
+separate bounded transactions and retries the same absolute counters/cursor.
+Each deletion transaction handles at most 128 observations. Already allocated
+pages are reused; the database file does not automatically shrink. If only the
+current minute remains and cannot fit, the writer reports an error/retries via
+its bounded RAM queue until a closed minute becomes eligible. An OS disk-full
+or I/O error is not treated as a database-capacity signal.
 
-Retention bounds time, not disk volume. Each active source/minute needs an
-observation and indexes; rapid cache churn can create more. SQLite stops accepting
-new observations at `max_database_mb`, even when unexpired data remain. WAL is
-additional. Writers retry while their bounded RAM queue permits; inspect errors
-and increase capacity if needed. Removed pages are reused; retention does not
-shrink an already allocated database file. Bulk `list`/CSV use temporary private
-SQLite snapshots and require extra disk space beside the chosen output/snapshot
-directory. Configure capacity based on actual traffic; no setting guarantees a
-CPU ceiling or loss-free capture on a small VPS.
+Capacity cleanup persists a monotonically increasing minute boundary and shares
+it between full nodes. Windows below it are no longer accepted/exported, even
+from a stale replica or an old forward queue. A node applying a new boundary
+removes existing older rows in a bounded transaction immediately, then continues
+background batches normally checked each minute; cleanup backlog can delay displayed totals. **A full node
+with a smaller database cap can shorten history for the entire cluster.** Use
+similar limits, or keep long-term archives outside the live cluster. The protocol
+is network v3; update all full and forward members together. Previous network
+protocols cannot safely interpret capacity deletions and are rejected.
+
+Counter totals subtract removed observations; an IP disappears when none remain.
+First/last timestamps and peak PPS for a continuously retained IP remain
+historical summaries, rather than being recomputed after each cleanup. Rating
+evidence is selected from surviving windows. A decayed suspicion score reaching
+zero does not delete an observation or its counters.
+
+`top` and `status` report SQLite logical database size/limit, WAL size, total main +
+WAL + SHM file sizes, and free space available to the service account on the
+**database filesystem** (`Bavail`, not the total size of the server's disks).
+SQLite logical size includes current WAL-backed state; total files can differ
+because WAL also contains old/uncheckpointed pages. Reusable pages count toward
+write headroom. Estimated headroom is the smaller of database cap minus live
+pages and available filesystem space; it estimates extra live SQLite page space
+**before eviction**, not a packet count or a guarantee that a transaction fits.
+Indexes, WAL, filesystem metadata and temporary export/list snapshots also need
+space. At capacity new data can continue replacing old windows even with little
+headroom. Metrics refresh outside capture, once per second on a running daemon;
+offline full-node `top` reads the same metrics. On forward nodes DB metrics are
+disabled and no SQLite file or directory is created; filesystem space refers to
+the nearest existing ancestor of the configured database directory.
+
+Forward-node `top` shows only a local RAM sample for the current process. There
+is no time-to-live for those IP rows: least-recently-used entries are evicted at
+`max_activity_ips`, and restart clears the cache. Delivery ACKs clear pending
+queue snapshots, not the dashboard's cache. Totals in that view are local
+process counters, not shared durable history. `retention: 0s` also disables age
+expiry of queued snapshots; RAM budget and shutdown/restart loss still apply.
+
+Full nodes coalesce cumulative snapshots per observation ID, source IP, and
+minute. Independent source contributions add; repeat delivery and out-of-order
+cumulative updates merge by maxima without adding twice. Cache eviction creates
+a new disjoint observation ID. Two sensors seeing the same physical packet still
+count two observations; choose observation boundaries accordingly. Configure
+capacity for actual traffic; settings cannot guarantee a CPU ceiling or loss-free
+capture on a small VPS.
 
 Network SQLite uses WAL/FULL durability with atomic counter/cursor transactions.
 Counter overflow rejects the entire transaction with an explicit error rather
 than wrapping counts. Storage peers track durable change cursors. Synchronization is eventual, so views
-can temporarily differ. Outages longer than retention cannot recover expired
-windows. Restoring an older database with the same epoch but a cursor below what
+can temporarily differ. Outages cannot recover windows already removed by the shared capacity boundary
+or optional age retention. Restoring an older database with the same epoch but a cursor below what
 peers already consumed is rejected; provision a fresh network database/identity
 and let current peers repopulate it instead.
 
@@ -323,11 +361,16 @@ and let current peers repopulate it instead.
 - Legacy configs without `mode` remain DNS mode; its cluster wire protocol and
   four-column client totals are separate. All communicating members must use
   the same mode. Forward storage is available only in network mode.
-- Policy/retention are recorded in each network database. This version requires
-  a **new database path on every full node** to change them; old aggregated
-  evidence cannot be recalculated as raw traffic. Stop the service, preserve the
-  previous database, change the path/settings on all members, and restart. This
-  starts a new history rather than silently reinterpreting old scores.
+- Policy/retention are recorded in each network database. To disable age expiry,
+  update all members to network v3, set `storage.retention: 0s` everywhere and
+  restart. Full nodes migrate a positive retention to zero in place, preserving
+  surviving observations, counters, node identity, epoch and cursors. Already
+  expired/deleted observations cannot be restored. No new database is needed.
+- Other retention changes and rating changes still require a **new database path
+  on every full node**. Stop the service, preserve the previous database, change
+  the path/settings on all members, and restart. Old aggregate evidence cannot
+  be recalculated as raw traffic. Rolling back to an older network binary
+  requires a compatible backup from before this upgrade.
 - Changing `storage.mode` to forward stops new local statistics writes. It never
   removes previous databases. Changing back to full reopens the configured
   network database; keep policy/retention consistent.

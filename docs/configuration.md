@@ -27,7 +27,7 @@ See [network monitoring](network.md) for complete full/forward configurations.
 | `labels_file` | `/etc/netmon/ip-labels.yaml` | Local server/whitelist descriptions; absolute path or empty to disable the manual catalog. Network CLI views reload edits automatically. |
 | `mode` | `dns` | `network` for packet activity/rating, `dns` for legacy query accounting. |
 | `storage.mode` | `full` | `full` stores shared data; `forward` sends from RAM and opens no statistics DB. Forward requires network mode and at least one cluster peer. |
-| `storage.retention` | `24h` | Network observation lifetime, 1h..720h. Every member must agree. |
+| `storage.retention` | `0s` | `0s` disables age expiry; optionally 1h..720h. Oldest closed minute windows are removed at database capacity. Every member, including forward, must agree. |
 | `storage.queue_memory_mb` | `8` | Estimated queued snapshot/entry budget, 1..256 MiB; process overhead is additional. |
 | `network.capture` | `true` | `false` makes a full node a receiver-only replica. |
 | `network.ports` | `[]` | Optional destination-port allowlist, at most 64 entries. Empty includes all ports/protocols. |
@@ -44,8 +44,13 @@ only. `max_activity_ips` bounds per-IP rate/port context (a value of 0 retains o
 entry in network mode), not the number of IPs allowed in durable storage.
 `max_database_mb` caps that network database, and WAL is additional. On a full
 queue, capture continues and reports rejected/discarded observations rather than
-waiting for disk/network I/O. Retention does not prevent reaching the size cap.
-Changing rating/retention requires a fresh network database on full members.
+waiting for disk/network I/O. Near the database size cap, oldest closed minute
+windows are removed in bounded transactions; the replicated cleanup boundary
+prevents resurrection. WAL and temporary exports remain additional disk usage.
+Changing a positive retention to `0s` migrates the existing full-node DB in place,
+preserving surviving observations, counters and identities. Other retention or
+rating changes still require a fresh network database. See
+[capacity and consistency](network.md#retention-consistency-and-capacity).
 
 `port`, `max_pending_ips`, `hot_cache_ips`, `write_retry_timeout`, and all TCP/IP
 reassembly settings below belong to DNS mode and do not control network mode.

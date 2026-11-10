@@ -191,6 +191,7 @@ func TestCollectorEvidenceProducesReplicatedScore100(t *testing.T) {
 }
 func TestExpiredWindowsAreRemovedAndLateReplaysDoNotResurrectThem(t *testing.T) {
 	c := configForTest(t)
+	c.Storage.Retention = 24 * time.Hour
 	d, e := openDisk(c, true)
 	if e != nil {
 		t.Fatal(e)

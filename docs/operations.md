@@ -101,13 +101,25 @@ offline forward/local reads fail explicitly because there is no persistent RAM
 history. Health reports malformed packets, kernel drops, queue bytes/rejections,
 discarded observations, delivery ACKs, and last delivery error.
 
-`max_database_mb` caps the network main file including indexes. Time retention
-expires rows; SQLite reuses freed pages without shrinking the file. Reaching the
-cap or running out of disk makes the writer retry through its bounded RAM queue;
-it does not stop capture or delete unexpired observations. Resolve the reported
-error promptly to avoid overflow loss. Queue rejections are retry attempts, not
-an exact lost-packet counter. WAL and temporary export/list copies are additional.
-A full node's rating/retention settings must match those stored in its database.
+`max_database_mb` caps network main pages including indexes. The default
+`storage.retention: 0s` keeps observations indefinitely by age; oldest closed
+minute windows are removed first near capacity. Deletions update totals and
+persist a replicated cutoff so peers cannot reintroduce old observations. The
+smallest full-node capacity can shorten history across the cluster. SQLite
+reuses pages without shrinking its file; WAL and temporary exports are extra.
+OS disk-full/I/O errors still require operator action, and a current minute that
+alone fills the database causes bounded retries until older windows are eligible.
+
+`top` displays DB/limit, WAL, total files, filesystem free space, and estimated
+write headroom before cleanup. `status` also shows the cutoff and cumulative
+pruned-observation count. Space is sampled from the database filesystem using
+space available to the service user; it is not an exact future packet budget.
+Queue rejections are retry attempts, not an exact lost-packet counter.
+
+Set `retention: 0s` on **all** members, including forward. A positive-to-zero
+change migrates surviving full-node data in place; other rating/retention changes
+still need a new network DB. Update all members together for network protocol v3.
+See [capacity and retention details](network.md#retention-consistency-and-capacity).
 
 Network CSV contains source IP, packet/protocol/byte counts, timestamps, suspicion,
 reasons, and partial-evidence flags. Export and full-node `list` copy SQLite to a

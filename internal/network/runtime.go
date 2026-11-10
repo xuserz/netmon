@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -14,12 +15,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"netmon/internal/capture"
 	"netmon/internal/cluster"
 	"netmon/internal/config"
 	"netmon/internal/live"
 	"netmon/internal/observation"
-	"golang.org/x/sys/unix"
 )
 
 func RuntimeBase(c config.Config) string { return filepath.Join(c.Network.RuntimeDirectory, "monitor") }
@@ -258,7 +259,23 @@ func (r *Runtime) publish(parent context.Context) {
 			rss = pages * uint64(os.Getpagesize())
 		}
 	}
+	var floor, pruned int64
+	var usageDB = (*sql.DB)(nil)
+	var storageStateKnown bool
+	if r.disk != nil {
+		usageDB = r.disk.r.DB
+		work, stop := context.WithTimeout(parent, 300*time.Millisecond)
+		storageStateKnown = r.disk.r.DB.QueryRowContext(work, "SELECT floor,evicted FROM net_storage WHERE id=1").Scan(&floor, &pruned) == nil
+		stop()
+	}
+	work, stop := context.WithTimeout(parent, 300*time.Millisecond)
+	storageUsage := sampleStorageUsage(work, r.cfg, usageDB)
+	stop()
 	r.healthMu.Lock()
+	if storageStateKnown {
+		r.health.StorageFloor, r.health.PrunedObservations = floor, pruned
+	}
+	r.health.Storage = storageUsage
 	r.health.Updated = now
 	r.health.CPUSeconds = float64(usage.Utime.Sec+usage.Stime.Sec) + float64(usage.Utime.Usec+usage.Stime.Usec)/1e6
 	r.health.RSSBytes = rss
