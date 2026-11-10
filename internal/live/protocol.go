@@ -41,7 +41,28 @@ type StorageUsage struct {
 	Error              string `json:"error,omitempty"`
 }
 
+type NetworkNode struct {
+	Node         string    `json:"node"`
+	Name         string    `json:"name"`
+	Role         string    `json:"role"`
+	Address      string    `json:"address"`
+	Direction    string    `json:"direction"`
+	State        string    `json:"state"`
+	Online       bool      `json:"online"`
+	LastSeen     time.Time `json:"last_seen"`
+	LastAttempt  time.Time `json:"last_attempt"`
+	LastDelivery time.Time `json:"last_delivery"`
+	RTTMillis    float64   `json:"rtt_ms"`
+	Error        string    `json:"error,omitempty"`
+	SyncError    string    `json:"sync_error,omitempty"`
+	SyncKnown    bool      `json:"sync_known"`
+	Cursor       int64     `json:"cursor"`
+	Head         int64     `json:"head"`
+	LastSync     time.Time `json:"last_sync"`
+}
+
 type Health struct {
+	NodeCacheEvictions uint64          `json:"node_cache_evictions"`
 	Storage            StorageUsage    `json:"storage"`
 	StorageFloor       int64           `json:"storage_floor"`
 	PrunedObservations int64           `json:"pruned_observations"`
@@ -107,6 +128,7 @@ type Request struct {
 	Limit int    `json:"limit,omitempty"`
 }
 type Response struct {
+	NetworkNodes    []NetworkNode      `json:"network_nodes,omitempty"`
 	Network         bool               `json:"network"`
 	NetworkIPs      []observation.IP   `json:"network_ips,omitempty"`
 	NetworkTotals   observation.Totals `json:"network_totals"`

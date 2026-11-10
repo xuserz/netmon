@@ -12,6 +12,7 @@ import (
 )
 
 type State struct {
+	Nodes     bool
 	Sort      string
 	Data      live.Response
 	Error     string
@@ -25,6 +26,9 @@ type State struct {
 
 func (s State) rowCount() int {
 	if s.Data.Network {
+		if s.Nodes {
+			return len(s.Data.NetworkNodes)
+		}
 		return len(s.Data.NetworkIPs)
 	}
 	if s.Sort == "rate" || s.Sort == "minute" {

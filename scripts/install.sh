@@ -126,6 +126,12 @@ awk -v account="$service_user" -v state="$state_directory" '
 install -m 0644 "$unit_temp" /etc/systemd/system/netmon.service
 rm -f -- "$unit_temp"
 install -d -m 0755 /usr/share/doc/netmon
+install -d -m 0755 /usr/share/netmon
+catalog_temp=$(mktemp /usr/share/netmon/.providers.XXXXXX)
+install -m 0644 "$project_dir/data/providers/catalog.json.gz" "$catalog_temp"
+mv -f -- "$catalog_temp" /usr/share/netmon/providers.json.gz
+install -m 0644 "$project_dir/data/providers/LICENSE" /usr/share/doc/netmon/provider-data-LICENSE
+install -m 0644 "$project_dir/data/providers/manifest.json" /usr/share/doc/netmon/provider-data-manifest.json
 for document in README.md LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md CONTRIBUTING.md; do
   install -m 0644 "$project_dir/$document" "/usr/share/doc/netmon/$document"
 done
@@ -140,7 +146,7 @@ if [ -d "$project_dir/docs" ]; then
 fi
 install -d -m 0755 /usr/local/libexec/netmon
 # Also rename helper scripts atomically: an update may be running the old one.
-for helper in install-release.sh uninstall.sh; do
+for helper in install-release.sh uninstall.sh build-provider-catalog.py; do
   helper_temp=$(mktemp /usr/local/libexec/netmon/.helper.XXXXXX)
   install -m 0755 "$project_dir/scripts/$helper" "$helper_temp"
   mv -f -- "$helper_temp" "/usr/local/libexec/netmon/$helper"

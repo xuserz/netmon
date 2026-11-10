@@ -3,6 +3,8 @@
 mode: network
 # Optional address book; changes are reloaded by top without restarting capture.
 labels_file: /etc/netmon/ip-labels.yaml
+# Offline provider attribution; empty disables. Updated with release data.
+providers_file: /usr/share/netmon/providers.json.gz
 # Choose ONE interface before Docker NAT: ip route get 1.1.1.1
 interface: eth0
 destination_ip: ""

@@ -23,6 +23,7 @@ func IsTerminal(f *os.File) bool {
 }
 
 type Options struct {
+	Nodes    bool
 	Network  bool
 	In, Out  *os.File
 	Interval time.Duration
@@ -141,7 +142,7 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 		}
 	}()
 	defer func() { cancel(); workers.Wait() }()
-	state := State{Version: opt.Version, Color: opt.Color, Sort: opt.Sort, Data: live.Response{Network: opt.Network}}
+	state := State{Nodes: opt.Nodes, Version: opt.Version, Color: opt.Color, Sort: opt.Sort, Data: live.Response{Network: opt.Network}}
 	if state.Sort == "" {
 		state.Sort = "total"
 	}
@@ -164,7 +165,7 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 		w, h := size()
 		visible := max(1, h-11)
 		if state.Data.Network {
-			visible = networkPageRows(h)
+			visible = state.networkPageRows(h)
 		}
 		state.Offset = max(0, min(state.Offset, max(0, state.rowCount()-visible)))
 		_, e := fmt.Fprint(opt.Out, "\x1b[H", Render(state, w, h))
@@ -249,6 +250,12 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				}
 			case "refresh":
 				request()
+			case "nodes":
+				if state.Data.Network {
+					state.Nodes = !state.Nodes
+					state.Offset = 0
+					request()
+				}
 			case "sort":
 				if state.Data.Network {
 					switch state.Sort {
@@ -285,14 +292,14 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				_, h := size()
 				step := max(1, h-12)
 				if state.Data.Network {
-					step = networkPageRows(h)
+					step = state.networkPageRows(h)
 				}
 				state.Offset = min(max(0, state.rowCount()-1), state.Offset+step)
 			case "page_up":
 				_, h := size()
 				step := max(1, h-12)
 				if state.Data.Network {
-					step = networkPageRows(h)
+					step = state.networkPageRows(h)
 				}
 				state.Offset = max(0, state.Offset-step)
 			case "home":
@@ -348,6 +355,8 @@ func (d *keyDecoder) Feed(b byte) string {
 		return "refresh"
 	case 'c', 'C':
 		return "color"
+	case 'n', 'N':
+		return "nodes"
 	case 's', 'S':
 		return "sort"
 	case 'j':

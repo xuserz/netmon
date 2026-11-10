@@ -128,6 +128,8 @@ class NetworkTests(unittest.TestCase):
             for _ in range(100):
                 client.sendto(b"not a DNS query", ("127.0.0.1", self.port))
         self.wait_for(lambda: self.total(a) == 100 and self.total(b) == 100)
+        self.assertTrue(any(not n["last_delivery"].startswith("0001-")
+                            for n in self.rpc(agent, "health").get("network_nodes", [])))
         self.assertFalse(agent["database"].parent.exists(), "forwarding wrote a statistics directory")
         self.assertFalse(a["database"].exists(), "network counters were mixed into the DNS database")
         result = self.command(a, "stats")
@@ -288,10 +290,13 @@ class NetworkTests(unittest.TestCase):
             with closing(sqlite3.connect(str(node["database"]) + ".network.db")) as db, db:
                 rows = db.execute("SELECT id,payload FROM net_observations").fetchall()
                 for identity, raw in rows:
-                    payload = json.loads(raw)
-                    payload.update(window=old_window, first_seen=old_window, last_seen=old_window)
+                    if raw.startswith(b"{"):
+                        payload = json.loads(raw)
+                        payload.update(window=old_window, first_seen=old_window, last_seen=old_window)
+                        raw = json.dumps(payload).encode()
+                    # Compact payload timestamps are offsets from the SQL window.
                     db.execute("UPDATE net_observations SET window=?,payload=? WHERE id=?",
-                               (old_window, json.dumps(payload).encode(), identity))
+                               (old_window, raw, identity))
                 db.execute("UPDATE net_ips SET first=?,last=?", (old_window, old_window))
                 if node is a:
                     # This is the durable result of capacity eviction, tested
@@ -315,3 +320,90 @@ class NetworkTests(unittest.TestCase):
         self.assertIn("Database:", result.stdout)
         self.assertIn("Disk available:", result.stdout)
         self.assertIn("Estimated write headroom", result.stdout)
+
+    def test_idle_forward_nodes_are_visible_without_storage_writes_and_expire(self):
+        port = self.reserve()
+        storage = self.node("storage", "full", port, [])
+        agent = self.node("quiet-edge", "forward", self.reserve(), [f"https://127.0.0.1:{port}"])
+        self.start(storage)
+        self.start(agent)
+
+        def node_snapshot(node, role):
+            return next((n for n in self.rpc(node, "health").get("network_nodes", [])
+                         if n["role"] == role and n["online"]), None)
+
+        incoming = self.wait_for(lambda: node_snapshot(storage, "forward"))
+        outgoing = self.wait_for(lambda: node_snapshot(agent, "full"))
+        self.assertEqual(incoming["name"], "quiet-edge")
+        self.assertEqual(incoming["direction"], "IN")
+        self.assertEqual(outgoing["direction"], "OUT")
+        self.assertEqual(incoming["state"], "ONLINE")
+        self.assertTrue(incoming["last_delivery"].startswith("0001-"))
+        self.assertFalse(agent["database"].parent.exists())
+        self.assertEqual(self.rpc(agent, "health")["health"]["delivery_acks"], 0)
+        with closing(sqlite3.connect(str(storage["database"]) + ".network.db")) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM net_observations").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT sequence FROM net_meta").fetchone()[0], 0)
+        for node in (storage, agent):
+            result = self.command(node, "nodes", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["online"], 1)
+            result = self.command(node, "top", "--nodes", "--once")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ONLINE", result.stdout)
+            self.assertIn("Nodes online: 1/1", result.stdout)
+        self.stop(agent)
+        self.wait_for(lambda: any(n["node"] == incoming["node"] and n["state"] == "OFFLINE"
+                                  for n in self.rpc(storage, "health").get("network_nodes", [])), seconds=22)
+        self.assertFalse(agent["database"].parent.exists())
+
+    def test_full_nodes_report_sync_positions_and_offline_reads_are_stale(self):
+        a_port, b_port = self.reserve(), self.reserve()
+        a = self.node("storage-a", "full", a_port, [])
+        b = self.node("storage-b", "full", b_port, [f"https://127.0.0.1:{a_port}"])
+        self.start(a)
+        self.start(b)
+        self.wait_for(lambda: any(n["sync_known"] and n["online"] and n["direction"] == "BOTH"
+                                  for n in self.rpc(b, "health").get("network_nodes", [])))
+        self.stop(b)
+        result = self.command(b, "nodes", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved["source"], "stored")
+        self.assertEqual(saved["online"], 0)
+        self.assertTrue(saved["nodes"])
+        self.assertTrue(all(n["state"] == "STALE" and not n["online"] for n in saved["nodes"]))
+
+    def test_compact_copy_requires_stopped_service_and_resumes_exact_history(self):
+        node = self.node("compact-source", "full", self.reserve(), [], capture=True)
+        self.start(node)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            for _ in range(100):
+                client.sendto(b"compact history", ("127.0.0.1", self.port))
+        self.wait_for(lambda: self.total(node) == 100)
+        target = self.root / "packed.network.db"
+        active = self.command(node, "compact", "--output", str(target))
+        self.assertNotEqual(active.returncode, 0)
+        self.assertIn("stop the network monitor", active.stderr)
+        self.assertFalse(target.exists())
+        self.stop(node)
+        original_database = str(node["database"]) + ".network.db"
+        with closing(sqlite3.connect(original_database)) as db:
+            identity = db.execute("SELECT node,epoch,sequence FROM net_meta").fetchone()
+        result = self.command(node, "compact", "--output", str(target))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Verified", result.stdout)
+        self.assertIn("Source retained:", result.stdout)
+        with closing(sqlite3.connect(target)) as db:
+            self.assertEqual(db.execute("SELECT node,epoch,sequence FROM net_meta").fetchone(), identity)
+            self.assertEqual(db.execute("SELECT packets FROM net_totals").fetchone()[0], 100)
+        node["config"].write_text(node["config"].read_text().replace(
+            f"database: {node['database']}", f"database: {target}"))
+        node["database"] = Path(str(target).removesuffix(".network.db"))
+        self.start(node)
+        self.assertEqual(self.total(node), 100)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.sendto(b"after compact", ("127.0.0.1", self.port))
+        self.wait_for(lambda: self.total(node) == 101)
+        with closing(sqlite3.connect(original_database)) as db:
+            self.assertEqual(db.execute("SELECT packets FROM net_totals").fetchone()[0], 100)

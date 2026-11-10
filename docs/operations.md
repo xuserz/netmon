@@ -86,7 +86,82 @@ sudo usermod -aG netmon "$USER"
 
 Log out and back in for group membership to take effect.
 
+## Compact network history
+
+Updating netmon writes new network observations in a compact lossless format.
+Older JSON observations remain readable. The existing database file will not
+immediately shrink: old records and SQLite free pages are still present.
+`compact` converts all legacy observation payloads in a **separate copy**, then
+runs VACUUM, verifies every decoded sample/version/priority with a SHA-256 digest,
+and checks SQLite integrity before publishing the file. The source is retained;
+no observation, aggregate, peer cursor, cleanup boundary or node identity is reset.
+
+This is planned maintenance on **one full node at a time**. Stop that monitor,
+including any other service writing the same DB, before creating the copy. The
+command takes the normal runtime lock and refuses an active monitor. Capture on
+that node pauses during maintenance; choose a quiet period and account for the
+bounded RAM queue of any forward sensors using it. Keep other full replicas
+available so senders can use an alternative endpoint.
+
+Example for an installation whose database directory is `/var/lib/netmon`:
+
+```sh
+sudo systemctl stop netmon
+sudo netmon compact --output /var/lib/netmon/stats-packed.network.db
+```
+
+On a migrated installation using `/var/lib/dnsmon`, choose
+`/var/lib/dnsmon/stats-packed.network.db` instead. Keep the new file in the same
+service-writable directory as the source. The output path must end in
+`.network.db` and must not exist. The tool preserves source ownership/group and
+permission bits; it never overwrites the original or an existing output. A failed,
+cancelled or timed-out operation does not publish a partial copy. Temporary
+files are cleaned up; a hard kill may leave a private `.netmon-export-*` directory
+that can be removed after confirming no maintenance operation is using it.
+
+After successful verification, edit the **same** `/etc/netmon/config.yaml`:
+
+```yaml
+database: /var/lib/netmon/stats-packed.network.db
+```
+
+Then run:
+
+```sh
+sudo netmon check --startup
+sudo systemctl start netmon
+sudo netmon stats
+sudo netmon nodes
+```
+
+Do not start the source database and its compact copy as two different full
+nodes: they have the same persistent identity. Switch the configured path before
+starting the service. If compaction fails, retain the original `database` setting
+and start the original service again. If you resume writes to the original,
+create a fresh compact copy before switching; an earlier copy is a snapshot of
+an earlier history.
+
+The retained original continues using disk space. After checking the new history
+and replication, archive that inactive source to another filesystem if you want
+to reclaim its space; the compaction command never removes it automatically.
+
+The output filesystem needs room for up to three source-sized temporary files
+plus a 16 MiB reserve, while the original source remains allocated. The command
+checks this before starting. Defaults: 30m deadline, `--timeout` accepts 1s..24h.
+The maintenance copy has a small page allowance for B-tree rebalance; its final
+file must fit `max_database_mb`. This operation does not stop services or edit
+configuration automatically, and it is unavailable on RAM-only forward nodes.
+New capture/wire queues keep their existing memory limits.
+
 ## Network-mode operations
+
+Use `netmon nodes` on full **or forward** nodes for live contacts, roles,
+incoming/outgoing links, last contact, RTT, replication position and errors.
+`netmon nodes --watch` and `netmon top --nodes` open the node dashboard; press
+`n` to switch between node connections and IP activity. `nodes --json` supports
+automation. Presence expires after a bounded heartbeat grace period; it is not
+a count of open sockets. Offline full-node records are marked STALE. See
+[node presence](network.md#node-presence-and-connections) for exact semantics.
 
 Network mode uses `/run/netmon/monitor.sock` for cached read-only snapshots and
 `/run/netmon/monitor.lock` to prevent a second capture process. systemd creates

@@ -1,0 +1,693 @@
+{
+  "format": 1,
+  "repository": "https://github.com/rezmoss/cloud-provider-ip-addresses",
+  "revision": "98befa4548b486fee5332e92b0a6e1b0ab55f31e",
+  "generated": "2026-11-10",
+  "license": "CC0-1.0",
+  "prefix_count": 45643,
+  "catalog_sha256": "92e8a91e5ea5463e4bbb3e5b2f574b7487cb814b9e33767c74ec5775832e6b4a",
+  "providers": [
+    {
+      "id": "akamai",
+      "name": "Akamai",
+      "category": "cdn",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 588
+    },
+    {
+      "id": "alibaba",
+      "name": "Alibaba (Alibaba Cloud / Alibaba Group)",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 337
+    },
+    {
+      "id": "amazonbot",
+      "name": "Amazonbot",
+      "category": "bot",
+      "sources": [
+        "https://developer.amazon.com/amazonbot/ip-addresses/",
+        "https://developer.amazon.com/amazonbot/searchbot-ip-addresses/",
+        "https://developer.amazon.com/amazonbot/live-ip-addresses/"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 3131
+    },
+    {
+      "id": "apple_private_relay",
+      "name": "Apple iCloud Private Relay",
+      "category": "relay",
+      "sources": [
+        "https://mask-api.icloud.com/egress-ip-ranges.csv"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 14020
+    },
+    {
+      "id": "applebot",
+      "name": "Applebot",
+      "category": "bot",
+      "sources": [
+        "https://search.developer.apple.com/applebot.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 12
+    },
+    {
+      "id": "atlassian",
+      "name": "Atlassian",
+      "category": "service",
+      "sources": [
+        "https://ip-ranges.atlassian.com"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 89
+    },
+    {
+      "id": "aws",
+      "name": "Amazon Web Services",
+      "category": "cloud",
+      "sources": [
+        "https://ip-ranges.amazonaws.com/ip-ranges.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 4115
+    },
+    {
+      "id": "azure",
+      "name": "Microsoft Azure",
+      "category": "cloud",
+      "sources": [
+        "https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 5085
+    },
+    {
+      "id": "backblaze",
+      "name": "Backblaze",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 24
+    },
+    {
+      "id": "baidu",
+      "name": "Baidu",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 50
+    },
+    {
+      "id": "bingbot",
+      "name": "Bingbot",
+      "category": "bot",
+      "sources": [
+        "https://www.bing.com/toolbox/bingbot.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 29
+    },
+    {
+      "id": "bunny",
+      "name": "Bunny CDN",
+      "category": "cdn",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 27
+    },
+    {
+      "id": "cachefly",
+      "name": "CacheFly",
+      "category": "cdn",
+      "sources": [
+        "https://cachefly.cachefly.net/ips/rproxy.txt"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 14
+    },
+    {
+      "id": "circleci",
+      "name": "CircleCI",
+      "category": "service",
+      "sources": [
+        "https://circleci.com/docs/ip-ranges-list.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 60
+    },
+    {
+      "id": "claudebot",
+      "name": "ClaudeBot",
+      "category": "bot",
+      "sources": [
+        "https://claude.com/crawling/bots.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 14
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "category": "cdn",
+      "sources": [
+        "https://www.cloudflare.com/ips-v4",
+        "https://www.cloudflare.com/ips-v6"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 22
+    },
+    {
+      "id": "commoncrawl",
+      "name": "Common Crawl (CCBot)",
+      "category": "bot",
+      "sources": [
+        "https://index.commoncrawl.org/ccbot.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 5
+    },
+    {
+      "id": "contabo",
+      "name": "Contabo",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 358
+    },
+    {
+      "id": "datadog",
+      "name": "Datadog",
+      "category": "monitoring",
+      "sources": [
+        "https://ip-ranges.datadoghq.com/"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 148
+    },
+    {
+      "id": "digitalocean",
+      "name": "DigitalOcean",
+      "category": "cloud",
+      "sources": [
+        "https://digitalocean.com/geo/google.csv"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 238
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "category": "service",
+      "sources": [
+        "https://cdn.discordapp.com/ipranges/discord.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 20
+    },
+    {
+      "id": "duckduckbot",
+      "name": "DuckDuckBot",
+      "category": "bot",
+      "sources": [
+        "https://duckduckgo.com/duckduckbot.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 484
+    },
+    {
+      "id": "fastly",
+      "name": "Fastly",
+      "category": "cdn",
+      "sources": [
+        "https://api.fastly.com/public-ip-list"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 24
+    },
+    {
+      "id": "gabia",
+      "name": "Gabia",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 59
+    },
+    {
+      "id": "gcore",
+      "name": "G-Core Labs",
+      "category": "cdn",
+      "sources": [
+        "https://api.gcore.com/cdn/public-ip-list"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 1028
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "category": "service",
+      "sources": [
+        "https://api.github.com/meta"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 6487
+    },
+    {
+      "id": "gocache",
+      "name": "GoCache",
+      "category": "cdn",
+      "sources": [
+        "https://gocache.com.br/ips"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 25
+    },
+    {
+      "id": "googlebot",
+      "name": "Googlebot",
+      "category": "bot",
+      "sources": [
+        "https://developers.google.com/static/crawling/ipranges/common-crawlers.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 59
+    },
+    {
+      "id": "googlecloud",
+      "name": "Google Cloud Platform",
+      "category": "cloud",
+      "sources": [
+        "https://www.gstatic.com/ipranges/cloud.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 495
+    },
+    {
+      "id": "googleservices",
+      "name": "Google Services",
+      "category": "service",
+      "sources": [
+        "https://www.gstatic.com/ipranges/goog.json",
+        "https://www.gstatic.com/ipranges/cloud.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 395
+    },
+    {
+      "id": "gptbot",
+      "name": "OpenAI GPTBot / ChatGPT-User / SearchBot",
+      "category": "bot",
+      "sources": [
+        "https://openai.com/gptbot.json",
+        "https://openai.com/chatgpt-user.json",
+        "https://openai.com/searchbot.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 267
+    },
+    {
+      "id": "hetzner",
+      "name": "Hetzner",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 92
+    },
+    {
+      "id": "hostway",
+      "name": "Hostway",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 43
+    },
+    {
+      "id": "huawei",
+      "name": "Huawei Cloud",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 232
+    },
+    {
+      "id": "ibmcloud",
+      "name": "IBM Cloud (SoftLayer)",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 217
+    },
+    {
+      "id": "imperva",
+      "name": "Imperva",
+      "category": "cdn",
+      "sources": [
+        "https://my.imperva.com/api/integration/v1/ips"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 12
+    },
+    {
+      "id": "internetarchive",
+      "name": "Internet Archive",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 5
+    },
+    {
+      "id": "leaseweb",
+      "name": "Leaseweb",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 1455
+    },
+    {
+      "id": "linode",
+      "name": "Linode (Akamai)",
+      "category": "cloud",
+      "sources": [
+        "https://geoip.linode.com/"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 279
+    },
+    {
+      "id": "meta",
+      "name": "Meta (Facebook / Instagram / WhatsApp)",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 122
+    },
+    {
+      "id": "microsoft365",
+      "name": "Microsoft 365",
+      "category": "service",
+      "sources": [
+        "https://endpoints.office.com/endpoints/worldwide?clientrequestid=b10c5ed1-bad1-445f-b386-b919946339a7"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 82
+    },
+    {
+      "id": "mullvad",
+      "name": "Mullvad VPN",
+      "category": "vpn",
+      "sources": [
+        "https://api.mullvad.net/www/relays/all/"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 1111
+    },
+    {
+      "id": "nhncloud",
+      "name": "NHN Cloud",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 93
+    },
+    {
+      "id": "oracle",
+      "name": "Oracle Cloud Infrastructure",
+      "category": "cloud",
+      "sources": [
+        "https://docs.oracle.com/iaas/tools/public_ip_ranges.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 809
+    },
+    {
+      "id": "ovhcloud",
+      "name": "OVHcloud",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 684
+    },
+    {
+      "id": "perplexitybot",
+      "name": "PerplexityBot",
+      "category": "bot",
+      "sources": [
+        "https://www.perplexity.ai/perplexitybot.json",
+        "https://www.perplexity.ai/perplexity-user.json"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 9
+    },
+    {
+      "id": "pingdom",
+      "name": "Pingdom",
+      "category": "monitoring",
+      "sources": [
+        "https://my.pingdom.com/probes/ipv4",
+        "https://my.pingdom.com/probes/ipv6"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 208
+    },
+    {
+      "id": "play2go",
+      "name": "Play2Go",
+      "category": "cloud",
+      "sources": [
+        "https://cdn.play2go.cloud/static/geofeed.csv"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 98
+    },
+    {
+      "id": "quiccloud",
+      "name": "Quic.cloud",
+      "category": "cdn",
+      "sources": [
+        "https://quic.cloud/ips"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 151
+    },
+    {
+      "id": "rackspace",
+      "name": "Rackspace",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 191
+    },
+    {
+      "id": "salesforce",
+      "name": "Salesforce",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 39
+    },
+    {
+      "id": "scaleway",
+      "name": "Scaleway",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 23
+    },
+    {
+      "id": "statuscake",
+      "name": "StatusCake",
+      "category": "monitoring",
+      "sources": [
+        "https://app.statuscake.com/Workfloor/Locations.php?format=txt"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 183
+    },
+    {
+      "id": "stormwall",
+      "name": "StormWall",
+      "category": "cdn",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 15
+    },
+    {
+      "id": "sucuri",
+      "name": "Sucuri",
+      "category": "cdn",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 19
+    },
+    {
+      "id": "teamcity",
+      "name": "TeamCity Cloud",
+      "category": "service",
+      "sources": [
+        "eu-west-1"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 11
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "category": "service",
+      "sources": [
+        "https://core.telegram.org/resources/cidr.txt"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 11
+    },
+    {
+      "id": "tencent",
+      "name": "Tencent (Tencent Cloud / Tencent Group)",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 258
+    },
+    {
+      "id": "tor",
+      "name": "Tor Exit Nodes",
+      "category": "tor",
+      "sources": [
+        "https://check.torproject.org/torbulkexitlist"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 686
+    },
+    {
+      "id": "upcloud",
+      "name": "UpCloud",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 48
+    },
+    {
+      "id": "uptimerobot",
+      "name": "UptimeRobot",
+      "category": "monitoring",
+      "sources": [
+        "https://api.uptimerobot.com/meta/ips"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 205
+    },
+    {
+      "id": "vultr",
+      "name": "Vultr",
+      "category": "cloud",
+      "sources": [
+        "https://geofeed.constant.com/"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 142
+    },
+    {
+      "id": "wasabi",
+      "name": "Wasabi",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 19
+    },
+    {
+      "id": "yandex",
+      "name": "Yandex",
+      "category": "cloud",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 70
+    },
+    {
+      "id": "zoho",
+      "name": "Zoho",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 79
+    },
+    {
+      "id": "zoom",
+      "name": "Zoom",
+      "category": "service",
+      "sources": [
+        "https://assets.zoom.us/docs/ipranges/Zoom.txt",
+        "https://assets.zoom.us/docs/ipranges/ZoomPhone.txt",
+        "https://assets.zoom.us/docs/ipranges/ZoomCC.txt",
+        "https://assets.zoom.us/docs/ipranges/ZoomCDN.txt",
+        "https://assets.zoom.us/docs/ipranges/ZoomCDN-IPv6.txt"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 55
+    },
+    {
+      "id": "zscaler",
+      "name": "Zscaler",
+      "category": "service",
+      "sources": [
+        "BGP announced prefixes via RIPE NCC RIPEstat"
+      ],
+      "generated": "2026-11-10",
+      "prefix_count": 178
+    }
+  ]
+}

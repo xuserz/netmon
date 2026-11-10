@@ -35,10 +35,14 @@ func networkFetch(ctx context.Context, c config.Config, kind string, n int, loca
 	if e != nil {
 		return live.Response{}, e
 	}
-	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode, Storage: network.StorageUsage(ctx, c)}}, nil
+	nodes, e := network.StoredNodes(ctx, c)
+	if e != nil {
+		return live.Response{}, e
+	}
+	return live.Response{Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: totals, Source: "stored", SnapshotAt: time.Now(), Health: live.Health{Mode: "network", StorageMode: c.Storage.Mode, Storage: network.StorageUsage(ctx, c), ClusterEnabled: c.Cluster.Enabled, ClusterPeers: len(nodes)}}, nil
 }
 func printNetworkRow(w io.Writer, r observation.IP) error {
-	_, e := fmt.Fprintf(w, "%-39s %5d %16s %16s %12s %-9s %s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)), r.Tag(), r.Label())
+	_, e := fmt.Fprintf(w, "%-39s %5d %16s %16s %12s %-9s %s\n", r.IP, r.Score, commas(fmt.Sprint(r.Packets)), commas(fmt.Sprint(r.Bytes)), commas(fmt.Sprint(r.SYN)), r.DisplayTag(), r.Label())
 	return e
 }
 func printNetworkRows(w io.Writer, rows []observation.IP) {
@@ -64,12 +68,17 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		defer cancel()
 		return network.Run(ctx, c)
 	}
+	if command == "compact" {
+		return compactCommand(args, c, out, errOut)
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	local := fs.Bool("local", false, "show bounded current-process RAM counters")
 	n := fs.Int("n", 20, "top rows (maximum 1000)")
 	sort := fs.String("sort", "score", "rank by score, total, bytes, or syn")
 	once := fs.Bool("once", false, "print once")
+	showNodes := fs.Bool("nodes", false, "start top on the node-connections view; n switches views")
+	jsonNodes := fs.Bool("json", false, "nodes: print machine-readable node presence")
 	watch := fs.Bool("watch", false, "require interactive top")
 	noColor := fs.Bool("no-color", false, "disable colors")
 	interval := fs.Duration("interval", 2*time.Second, "refresh interval")
@@ -84,6 +93,15 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		return e
 	}
 	_ = startup
+	if *showNodes && command != "top" {
+		return errors.New("--nodes applies to top; use netmon nodes")
+	}
+	if *jsonNodes && (command != "nodes" || *watch) {
+		return errors.New("--json applies to nodes without --watch")
+	}
+	if command == "nodes" && *once && *watch {
+		return errors.New("--once and --watch are mutually exclusive")
+	}
 	labels := network.NewLabeler(c)
 	if *n < 1 || *n > 1000 {
 		return errors.New("network -n must be 1..1000")
@@ -162,7 +180,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 			return fmt.Errorf("network monitor unavailable: %w", e)
 		}
 		h := r.Health
-		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nPeers online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
+		fmt.Fprintf(out, "NETWORK MONITOR · %s · PID %d\nNode: %s\nLocal captured packets: %d\nKernel drops: %d\nMalformed packets: %d\nRAM queue: %d/%d bytes\nQueue rejections: %d\nDiscarded observations: %d\nDelivery ACKs: %d\nLast durable delivery: %s\nNodes online: %d/%d\nError: %s\n", h.StorageMode, h.PID, h.ClusterNode, h.Counted, h.KernelDrops, h.MalformedPackets, h.QueueBytes, h.QueueLimit, h.QueueRejected, h.DiscardedSamples, h.DeliveryAcks, timestamp(h.LastFlush), h.ClusterOnline, h.ClusterPeers, h.FlushError)
 		printNetworkStorage(out, h)
 
 		if h.StorageMode == "full" {
@@ -181,18 +199,12 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		}
 		return nil
 	}
-	if command == "nodes" {
-		if c.Storage.Mode == "forward" {
-			return errors.New("forwarding peer status is available in netmon status; this node has no peer database")
-		}
-		peers, e := network.ReadPeers(ctx, c)
+	if command == "nodes" && !*watch {
+		response, e := networkNodesFetch(ctx, c)
 		if e != nil {
 			return e
 		}
-		for _, p := range peers {
-			fmt.Fprintf(out, "%s  %s  %s  last=%s  %s\n", p.URL, p.Name, p.Node, timestamp(time.Unix(p.Success, 0)), p.Error)
-		}
-		return nil
+		return printNetworkNodes(out, response, *jsonNodes)
 	}
 	if command == "show" {
 		if fs.NArg() != 1 {
@@ -226,6 +238,9 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		if row.ServerName != "" {
 			fmt.Fprintf(out, "Server: %s (%s)\n", row.ServerName, row.ServerSource)
 		}
+		for _, p := range row.Providers {
+			fmt.Fprintf(out, "Provider: %s (%s); matched %s; catalog %s @ %s\n", p.Name, p.Category, p.CIDR, row.ProviderDate, row.ProviderRevision)
+		}
 		if row.Whitelisted {
 			fmt.Fprintf(out, "Whitelist: %s (counts and suspicion are retained)\n", row.WhitelistDescription)
 		}
@@ -244,7 +259,7 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 	if *interval < 250*time.Millisecond || *interval > time.Minute {
 		return errors.New("--interval must be 250ms..1m")
 	}
-	if command == "top" && !*once && (*watch || terminalOutput(out)) {
+	if (command == "top" || command == "nodes") && !*once && (*watch || terminalOutput(out)) {
 		file, ok := out.(*os.File)
 		if !ok {
 			return errors.New("live top requires a terminal")
@@ -252,13 +267,16 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		background, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		_, envNoColor := os.LookupEnv("NO_COLOR")
-		return ui.Run(background, ui.Options{Network: true, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, func(ctx context.Context, sort string) (live.Response, error) {
+		return ui.Run(background, ui.Options{Network: true, Nodes: command == "nodes" || *showNodes, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, func(ctx context.Context, sort string) (live.Response, error) {
 			return networkFetch(ctx, c, sort, *n, *local, labels)
 		})
 	}
 	r, e := networkFetch(ctx, c, *sort, *n, *local, labels)
 	if e != nil {
 		return e
+	}
+	if command == "top" && *showNodes {
+		return printNetworkNodes(out, r, false)
 	}
 	if command == "top" || command == "list" {
 		printNetworkRows(out, r.NetworkIPs)

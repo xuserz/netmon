@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"netmon/internal/identity"
@@ -66,6 +67,7 @@ func TestConfiguredServerNodesAreRecognizedWithoutDNS(t *testing.T) {
 }
 func TestStoredViewsListAndCSVIncludeCurrentLabels(t *testing.T) {
 	c := configForTest(t)
+	c.ProvidersFile, _ = filepath.Abs("../../data/providers/catalog.json.gz")
 	c.Interface = "nonexistent"
 	c.LabelsFile = filepath.Join(t.TempDir(), "labels.yaml")
 	d, e := openDisk(c, true)
@@ -74,6 +76,7 @@ func TestStoredViewsListAndCSVIncludeCurrentLabels(t *testing.T) {
 	}
 	defer d.Close()
 	item := sample(observation.ID(), 7)
+	item.IP = "104.16.1.2"
 	if e = d.Merge(context.Background(), []observation.Sample{item}, nil); e != nil {
 		t.Fatal(e)
 	}
@@ -86,6 +89,9 @@ func TestStoredViewsListAndCSVIncludeCurrentLabels(t *testing.T) {
 	row, e := ReadIP(context.Background(), c, item.IP)
 	if e != nil || !row.Whitelisted || row.Packets != 7 {
 		t.Fatal(row, e)
+	}
+	if len(row.Providers) == 0 || row.DisplayTag() != "TRUSTED" || !strings.Contains(row.Label(), "Cloudflare (CDN)") || row.ProviderDate != "2026-11-10" {
+		t.Fatal(row)
 	}
 	seen := false
 	_, e = List(context.Background(), c, t.TempDir(), "score", func(ip observation.IP) error { seen = ip.WhitelistDescription == "Known monitor"; return nil })
@@ -108,7 +114,29 @@ func TestStoredViewsListAndCSVIncludeCurrentLabels(t *testing.T) {
 	if records[0][14] != "whitelisted" || records[1][14] != "true" || records[1][15] != "Known monitor" {
 		t.Fatal(records)
 	}
+	if len(records[0]) != 19 || records[0][16] != "providers" || !strings.Contains(records[1][16], `"id":"cloudflare"`) || records[1][17] != row.ProviderRevision || records[1][18] != row.ProviderDate {
+		t.Fatal(records)
+	}
 	if e = Export(context.Background(), c, c.LabelsFile); e == nil {
 		t.Fatal("CSV overwrote labels file")
+	}
+	if e = Export(context.Background(), c, c.ProvidersFile); e == nil {
+		t.Fatal("CSV overwrote provider catalog")
+	}
+}
+
+func TestProviderAttributionNeverGrantsTrustOrChangesCounters(t *testing.T) {
+	c := configForTest(t)
+	c.Interface = "nonexistent"
+	c.LabelsFile = ""
+	c.ProvidersFile, _ = filepath.Abs("../../data/providers/catalog.json.gz")
+	row := observation.IP{IP: "104.16.1.2", Score: 85, Counters: observation.Counters{Packets: 120, Bytes: 5000, SYN: 100}}
+	rows := []observation.IP{row}
+	if e := NewLabeler(c).Annotate(rows); e != nil {
+		t.Fatal(e)
+	}
+	got := rows[0]
+	if got.Whitelisted || got.ServerName != "" || got.DisplayTag() != "CDN" || got.Score != row.Score || got.Counters != row.Counters {
+		t.Fatal(got)
 	}
 }

@@ -53,14 +53,14 @@ func ReadPeers(ctx context.Context, c config.Config) ([]Peer, error) {
 }
 func csvFields(row observation.IP) []string {
 	reasons, _ := json.Marshal(row.Reasons)
-	return []string{row.IP, strconv.FormatInt(row.Packets, 10), strconv.FormatInt(row.Bytes, 10), strconv.FormatInt(row.TCP, 10), strconv.FormatInt(row.SYN, 10), strconv.FormatInt(row.UDP, 10), strconv.FormatInt(row.ICMP, 10), time.Unix(row.First, 0).UTC().Format(time.RFC3339), time.Unix(row.Last, 0).UTC().Format(time.RFC3339), strconv.Itoa(row.Score), string(reasons), strconv.FormatBool(row.Partial), row.ServerName, row.ServerSource, strconv.FormatBool(row.Whitelisted), row.WhitelistDescription}
+	return []string{row.IP, strconv.FormatInt(row.Packets, 10), strconv.FormatInt(row.Bytes, 10), strconv.FormatInt(row.TCP, 10), strconv.FormatInt(row.SYN, 10), strconv.FormatInt(row.UDP, 10), strconv.FormatInt(row.ICMP, 10), time.Unix(row.First, 0).UTC().Format(time.RFC3339), time.Unix(row.Last, 0).UTC().Format(time.RFC3339), strconv.Itoa(row.Score), string(reasons), strconv.FormatBool(row.Partial), row.ServerName, row.ServerSource, strconv.FormatBool(row.Whitelisted), row.WhitelistDescription, providerCSV(row), row.ProviderRevision, row.ProviderDate}
 }
 func Export(ctx context.Context, c config.Config, path string) error {
 	target, e := filepath.Abs(path)
 	if e != nil {
 		return e
 	}
-	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, c.LabelsFile, RuntimeBase(c)} {
+	for _, base := range []string{c.Database, DataPath(c.Database), cluster.Path(c.Database), c.Cluster.KeyFile, c.LabelsFile, c.ProvidersFile, RuntimeBase(c)} {
 		if base == "" {
 			continue
 		}
@@ -97,7 +97,7 @@ func Export(ctx context.Context, c config.Config, path string) error {
 	defer os.Remove(f.Name())
 	defer f.Close()
 	writer := csv.NewWriter(f)
-	if e = writer.Write([]string{"ip", "packets", "bytes", "tcp_packets", "tcp_syn", "udp_packets", "icmp_packets", "first_seen", "last_seen", "suspicion", "reasons", "partial", "server_name", "server_source", "whitelisted", "whitelist_description"}); e != nil {
+	if e = writer.Write([]string{"ip", "packets", "bytes", "tcp_packets", "tcp_syn", "udp_packets", "icmp_packets", "first_seen", "last_seen", "suspicion", "reasons", "partial", "server_name", "server_source", "whitelisted", "whitelist_description", "providers", "provider_revision", "provider_date"}); e != nil {
 		return e
 	}
 	rows, e := copy.DB.QueryContext(ctx, "SELECT "+ipColumns+" FROM net_ips ORDER BY priority DESC,ip")
@@ -194,4 +194,12 @@ func List(ctx context.Context, c config.Config, directory, kind string, visit fu
 		}
 	}
 	return totals, rows.Err()
+}
+
+func providerCSV(row observation.IP) string {
+	if len(row.Providers) == 0 {
+		return ""
+	}
+	raw, _ := json.Marshal(row.Providers)
+	return string(raw)
 }

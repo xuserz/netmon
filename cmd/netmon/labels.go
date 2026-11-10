@@ -67,7 +67,7 @@ func labelCommand(kind string, args []string, c config.Config, configPath string
 			return e
 		}
 	}
-	protected := []string{configPath, c.Cluster.KeyFile}
+	protected := []string{configPath, c.Cluster.KeyFile, c.ProvidersFile}
 	for _, base := range []string{c.Database, network.DataPath(c.Database), c.Database + ".cluster.db"} {
 		for _, suffix := range []string{"", "-wal", "-shm", ".sock", ".lock"} {
 			protected = append(protected, base+suffix)

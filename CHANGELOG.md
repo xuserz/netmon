@@ -8,6 +8,10 @@ tags retroactively.
 
 ### Fixed
 
+- Restore the small SQLite cleanup reserve across bounded batches, and make the
+  forced-full recovery regression retain maintenance pages needed by index
+  rebalance while explicitly checking that the incoming batch hits SQLITE_FULL.
+
 - Wait for a complete terminal frame containing the requested IP before checking
   trailing columns in PTY tests. Cover one-byte reads so a split risk column
   cannot intermittently fail native static-release CI.
@@ -54,6 +58,30 @@ tags retroactively.
   longer limited by `net.core.rmem_max`.
 
 ### Added
+
+- Offline provider attribution from a pinned CC0 IP-range snapshot: 67 provider
+  lists, 45,643 merged provider/CIDR pairs. Show provider/category/range provenance
+  in network views and CSV without API calls, capture-path work or SQLite rows.
+  Keep cloud/CDN/bot/VPN/Tor attribution independent of TRUSTED manual whitelist
+  status and suspicion. Add `providers [lookup IP]`, a local-file-only builder,
+  release installation, hot reload, provenance manifest and upstream license.
+
+- Versioned compact network observation payloads with varint counters and relative
+  timestamps, reusing SQL identity/IP/minute columns. Preserve every stored sample
+  field and all indexes; read legacy JSON and compact rows in the same database.
+  Network v3 JSON messages and CSV semantics remain unchanged.
+- `compact --output FILE` for stopped full nodes: convert an isolated copy in
+  bounded batches, reclaim pages with VACUUM, verify sample/version/priority
+  digests and SQLite integrity, and publish without replacing the source.
+  Preserve ownership, counters, identities, cursors and cleanup metadata.
+
+- Live node presence in network top, with n to switch to a scrollable node view;
+  `nodes --watch`, `nodes --json`, and `top --nodes` on full and forward nodes.
+  Show roles, names, authenticated links, last contact, RTT, sync gap and errors.
+- Bounded idle heartbeats and incoming sensor discovery outside packet capture,
+  without forward-node storage or heartbeat observations/ACKs. Merge node IDs,
+  expire lost contacts, retain synchronization failures despite reachability,
+  and mark offline saved records STALE instead of online.
 
 - Capacity-based network history with `retention: 0s` by default. Delete oldest
   closed minute windows near the SQLite page cap, adjust totals, and retry full

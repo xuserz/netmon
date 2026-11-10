@@ -28,19 +28,22 @@ const wireVersion = 3
 const maxWire = 2 << 20
 
 type message struct {
-	Version       int                `json:"version"`
-	Mode          string             `json:"mode"`
-	PolicyVersion string             `json:"policy_version"`
-	Policy        observation.Policy `json:"policy"`
-	Retention     int64              `json:"retention"`
-	Node          string             `json:"node"`
-	Name          string             `json:"name"`
-	Role          string             `json:"role"`
-	Advertise     string             `json:"advertise"`
-	Peers         []string           `json:"peers,omitempty"`
+	Heartbeat         bool               `json:"heartbeat,omitempty"`
+	ContactTTLSeconds int64              `json:"contact_ttl_seconds,omitempty"`
+	Version           int                `json:"version"`
+	Mode              string             `json:"mode"`
+	PolicyVersion     string             `json:"policy_version"`
+	Policy            observation.Policy `json:"policy"`
+	Retention         int64              `json:"retention"`
+	Node              string             `json:"node"`
+	Name              string             `json:"name"`
+	Role              string             `json:"role"`
+	Advertise         string             `json:"advertise"`
+	Peers             []string           `json:"peers,omitempty"`
 	Page
 }
 type transport struct {
+	presence      *presence
 	cfg           config.Config
 	node, name    string
 	store         *disk
@@ -65,7 +68,7 @@ func forwardIdentity(c config.Config, key []byte) string {
 	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 func newTransport(c config.Config, node, name string, d *disk) (*transport, error) {
-	t := &transport{cfg: c, node: node, name: name, store: d, peers: map[string]Peer{}, slots: make(chan struct{}, 4)}
+	t := &transport{presence: newPresence(), cfg: c, node: node, name: name, store: d, peers: map[string]Peer{}, slots: make(chan struct{}, 4)}
 	if !c.Cluster.Enabled {
 		return t, nil
 	}
@@ -141,7 +144,7 @@ func (t *transport) list() []Peer {
 }
 func (t *transport) remember(p Peer) { t.mu.Lock(); t.peers[p.URL] = p; t.mu.Unlock() }
 func (t *transport) envelope() message {
-	m := message{Version: wireVersion, Mode: "network", PolicyVersion: observation.PolicyVersion, Policy: Policy(t.cfg), Retention: int64(t.cfg.Storage.Retention / time.Second), Node: t.node, Name: t.name, Role: t.cfg.Storage.Mode}
+	m := message{Version: wireVersion, Mode: "network", PolicyVersion: observation.PolicyVersion, Policy: Policy(t.cfg), Retention: int64(t.cfg.Storage.Retention / time.Second), Node: t.node, Name: t.name, Role: t.cfg.Storage.Mode, ContactTTLSeconds: int64(t.contactTTL() / time.Second)}
 	if t.cfg.Storage.Mode == "full" {
 		m.Advertise, _ = config.PeerURL(t.cfg.Cluster.Advertise)
 	}
@@ -159,6 +162,9 @@ func (t *transport) validate(m message) error {
 	if m.Version != wireVersion || m.Mode != "network" || m.PolicyVersion != observation.PolicyVersion || m.Policy != Policy(t.cfg) || m.Retention != int64(t.cfg.Storage.Retention/time.Second) {
 		return errors.New("network mode, rating policy, or retention differs between nodes")
 	}
+	if m.ContactTTLSeconds != 0 && (m.ContactTTLSeconds < 15 || m.ContactTTLSeconds > 120) {
+		return errors.New("invalid contact lifetime")
+	}
 	if m.Floor < 0 || m.Floor%60 != 0 || m.Floor > time.Now().Unix()+300 {
 		return errors.New("invalid storage floor")
 	}
@@ -167,8 +173,11 @@ func (t *transport) validate(m message) error {
 	}
 	return nil
 }
-func (t *transport) request(ctx context.Context, p Peer, path string, m message) (message, error) {
-	var response message
+func (t *transport) request(ctx context.Context, p Peer, path string, m message) (response message, err error) {
+	started := time.Now()
+	defer func() {
+		t.presence.recordOutgoing(p.URL, response, time.Now(), time.Since(started), err, t.contactTTL())
+	}()
 	raw, e := json.Marshal(m)
 	if e != nil {
 		return response, e
@@ -219,6 +228,7 @@ func (t *transport) send(ctx context.Context, items []pending) error {
 		reply, e := t.request(requestCtx, p, "/v3/network/ingest", m)
 		cancel()
 		p.Error = limitedError(e)
+		t.presence.deliveryTo(p.URL, time.Now(), e)
 		if e == nil {
 			p.Node = reply.Node
 			p.Name = reply.Name
@@ -258,6 +268,7 @@ func (t *transport) sync(ctx context.Context) {
 				stop()
 			}
 			if e != nil {
+				t.presence.syncResult(p.URL, p, 0, e)
 				p.Error = limitedError(e)
 				t.remember(p)
 				saveCtx, stop := context.WithTimeout(ctx, time.Second)
@@ -265,6 +276,7 @@ func (t *transport) sync(ctx context.Context) {
 				stop()
 				break
 			}
+			t.presence.syncResult(p.URL, p, reply.Head, nil)
 			t.remember(p)
 			if reply.Cursor >= reply.Head {
 				break
@@ -319,10 +331,20 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "duplicate node identity or self connection", 409)
 		return
 	}
+	if m.Heartbeat && (r.URL.Path != "/v3/network/ingest" || len(m.Samples) != 0) {
+		http.Error(w, "heartbeat must be an empty ingest", 400)
+		return
+	}
+	t.presence.recordIncoming(m, r.RemoteAddr, time.Now(), t.contactTTL())
 	if m.Role == "full" {
 		t.discover(m.Advertise)
 	}
 	reply := t.envelope()
+	if m.Heartbeat {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(reply)
+		return
+	}
 	if r.URL.Path == "/v3/network/ingest" {
 		for _, s := range m.Samples {
 			if s.Node != m.Node {
@@ -331,8 +353,14 @@ func (t *transport) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if e := t.store.Merge(ctx, m.Samples, nil); e != nil {
+			if len(m.Samples) > 0 {
+				t.presence.delivery(m.Node, time.Now(), e)
+			}
 			http.Error(w, limitedError(e), 503)
 			return
+		}
+		if len(m.Samples) > 0 {
+			t.presence.delivery(m.Node, time.Now(), nil)
 		}
 	} else {
 		page, e := t.store.Page(ctx, m.Page.Epoch, m.Page.Cursor)

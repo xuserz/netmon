@@ -3,8 +3,9 @@ package network
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/mattn/go-sqlite3"
 	"reflect"
 	"testing"
 	"time"
@@ -36,21 +37,18 @@ func drainPrune(t *testing.T, d *disk) {
 func assertStoredCounters(t *testing.T, d *disk) {
 	t.Helper()
 	ctx := context.Background()
-	rows, e := d.r.DB.Query("SELECT payload FROM net_observations")
+	rows, e := d.r.DB.Query("SELECT " + sampleColumns + " FROM net_observations")
 	if e != nil {
 		t.Fatal(e)
 	}
 	expected := map[string]observation.Counters{}
 	total := observation.Counters{}
 	for rows.Next() {
-		var raw []byte
-		var s observation.Sample
-		if e = rows.Scan(&raw); e != nil {
-			t.Fatal(e)
+		s, err := scanSample(rows)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if e = json.Unmarshal(raw, &s); e != nil {
-			t.Fatal(e)
-		}
+
 		expected[s.IP] = expected[s.IP].Plus(s.Counters)
 		total = total.Plus(s.Counters)
 	}
@@ -266,6 +264,9 @@ func TestCapacityRecoversLargeBatchAndCursorAfterSQLiteFull(t *testing.T) {
 	if e = d.w.DB.QueryRow("PRAGMA page_count").Scan(&limit); e != nil {
 		t.Fatal(e)
 	}
+	// Leave a small maintenance reserve: WITHOUT ROWID index rebalance can
+	// allocate pages during DELETE. The incoming batch must still hit SQLITE_FULL.
+	limit += 8
 	if _, e = d.w.DB.Exec(fmt.Sprintf("PRAGMA max_page_count=%d", limit)); e != nil {
 		t.Fatal(e)
 	}
@@ -280,6 +281,12 @@ func TestCapacityRecoversLargeBatchAndCursorAfterSQLiteFull(t *testing.T) {
 		incoming = append(incoming, item)
 	}
 	peer := Peer{URL: "https://192.0.2.1:9845", Node: node, Epoch: observation.ID(), Cursor: 42}
+	var changed bool
+	e = d.mergeOnce(ctx, incoming, &peer, 0, &changed)
+	var full sqlite3.Error
+	if !errors.As(e, &full) || full.Code != sqlite3.ErrFull || changed {
+		t.Fatalf("fixture did not trigger a rolled-back SQLITE_FULL batch: %v", e)
+	}
 	if e = d.Merge(ctx, incoming, &peer); e != nil {
 		t.Fatal("capacity recovery failed", e)
 	}

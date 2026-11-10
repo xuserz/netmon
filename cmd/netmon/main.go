@@ -34,9 +34,12 @@ Usage: netmon [--config /etc/netmon/config.yaml] [--db /path/stats.db] COMMAND
   stats                Global totals
   list                 All saved source IPs (network: temporary snapshot)
   export --csv FILE    Export a consistent snapshot to CSV
+  compact --output DB  Create a verified compact copy (network full; stop first)
   whitelist            List/add/remove trusted IP descriptions
   servers              List/add/remove your server IP descriptions
-  nodes                Cluster peers and synchronization status
+  providers [lookup IP] Inspect the local provider range catalog
+  nodes [--watch]      Node presence, connections and synchronization
+  top --nodes          Start on the node-connections view (n toggles)
   cluster keygen       Generate a shared cluster key
   status               Service state and live capture diagnostics
   check [--startup]    Read-only configuration and runtime checks
@@ -102,9 +105,15 @@ func run(args []string, out, errOut io.Writer) error {
 		return clusterKeygen(rest[1:], out, errOut)
 	}
 	switch command {
-	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers":
+	case "run", "top", "show", "stats", "list", "export", "status", "check", "nodes", "whitelist", "servers", "compact", "providers":
 	default:
 		return fmt.Errorf("unknown command %q; use netmon help", command)
+	}
+	if command == "compact" && len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {
+		return compactCommand(rest, config.Default(), out, errOut)
+	}
+	if command == "providers" && len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {
+		return providerCommand(rest, config.Default(), out)
 	}
 	c, e := config.Load(path, explicit || command == "run" || command == "check")
 	if e != nil {
@@ -120,6 +129,12 @@ func run(args []string, out, errOut io.Writer) error {
 		}
 		return labelCommand(command, rest, c, path, out)
 	}
+	if command == "providers" {
+		if dbPath != "" {
+			return errors.New("--db does not apply to providers; use --config")
+		}
+		return providerCommand(rest, c, out)
+	}
 	configuredDatabase := c.Database
 	if dbPath != "" {
 		p, err := filepath.Abs(dbPath)
@@ -130,6 +145,9 @@ func run(args []string, out, errOut io.Writer) error {
 	}
 	if c.Mode == "network" {
 		return networkCommand(command, rest, c, out, errOut)
+	}
+	if command == "compact" {
+		return errors.New("compact requires mode: network")
 	}
 	if command == "nodes" {
 		if len(rest) > 0 {

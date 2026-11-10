@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"netmon/internal/providers"
 	"strings"
 	"time"
 	"unicode"
@@ -50,11 +51,14 @@ type Sample struct {
 	Partial  bool     `json:"partial"`
 }
 type IP struct {
-	ServerName           string `json:"server_name,omitempty"`
-	ServerSource         string `json:"server_source,omitempty"`
-	Whitelisted          bool   `json:"whitelisted,omitempty"`
-	WhitelistDescription string `json:"whitelist_description,omitempty"`
-	IP                   string `json:"ip"`
+	Providers            []providers.Match `json:"providers,omitempty"`
+	ProviderRevision     string            `json:"provider_revision,omitempty"`
+	ProviderDate         string            `json:"provider_date,omitempty"`
+	ServerName           string            `json:"server_name,omitempty"`
+	ServerSource         string            `json:"server_source,omitempty"`
+	Whitelisted          bool              `json:"whitelisted,omitempty"`
+	WhitelistDescription string            `json:"whitelist_description,omitempty"`
+	IP                   string            `json:"ip"`
 	Counters
 	First      int64    `json:"first_seen"`
 	Last       int64    `json:"last_seen"`
@@ -225,7 +229,19 @@ func (ip IP) Tag() string {
 	if ip.Whitelisted {
 		return "WL"
 	}
+	if len(ip.Providers) > 0 {
+		return strings.ToUpper(ip.Providers[0].Category)
+	}
 	return "-"
+}
+
+// DisplayTag expands the manual whitelist label without changing its existing
+// programmatic tag or treating provider attribution as a trust decision.
+func (ip IP) DisplayTag() string {
+	if ip.Tag() == "WL" {
+		return "TRUSTED"
+	}
+	return ip.Tag()
 }
 func (ip IP) Label() string {
 	var parts []string
@@ -234,6 +250,9 @@ func (ip IP) Label() string {
 	}
 	if ip.WhitelistDescription != "" {
 		parts = append(parts, ip.WhitelistDescription)
+	}
+	for _, p := range ip.Providers {
+		parts = append(parts, p.Name+" ("+strings.ToUpper(p.Category)+")")
 	}
 	if len(parts) == 0 {
 		return "-"

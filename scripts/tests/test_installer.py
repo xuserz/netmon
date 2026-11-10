@@ -66,7 +66,7 @@ esac
         project = self.root / "checkout"
         (project / "scripts").mkdir(parents=True)
         (project / "packaging").mkdir()
-        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md"):
+        for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md", "CONTRIBUTING.md", "netmon.yaml", "ip-labels.yaml", "scripts/migrate-dnsmon.sh", "scripts/uninstall.sh", "scripts/install-release.sh", "packaging/netmon.service", "docs/configuration.md", "docs/operations.md", "docs/development.md", "docs/cluster.md", "docs/network.md", "docs/public-dns.md", "docs/providers.md", "scripts/build-provider-catalog.py", "data/providers/catalog.json.gz", "data/providers/manifest.json", "data/providers/LICENSE"):
             (project / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, project / name)
         content = (ROOT / "scripts/install.sh").read_text()
@@ -103,11 +103,25 @@ esac
         self.assertIn("new-good", self.installed.read_text())
         self.assertTrue((self.root / "usr/share/doc/netmon/docs/configuration.md").is_file())
         self.assertTrue((self.root / "usr/share/doc/netmon/docs/public-dns.md").is_file())
+        self.assertEqual((self.root / "usr/share/netmon/providers.json.gz").read_bytes(), (ROOT / "data/providers/catalog.json.gz").read_bytes())
+        self.assertEqual((self.root / "usr/share/doc/netmon/provider-data-LICENSE").read_bytes(), (ROOT / "data/providers/LICENSE").read_bytes())
         self.assertEqual((self.root / "etc/netmon/ip-labels.yaml").read_bytes(), (ROOT / "ip-labels.yaml").read_bytes())
         self.assertTrue((self.root / "usr/share/doc/netmon/netmon.yaml").is_file())
         self.assertEqual((self.root / "usr/share/doc/netmon/LICENSE").read_text(), (ROOT / "LICENSE").read_text())
         self.assertEqual(self.state.read_text().strip(), "active")
         self.assert_data_preserved()
+
+    def test_provider_catalog_updates_without_overwriting_user_labels(self):
+        labels = self.root / "etc/netmon/ip-labels.yaml"
+        labels.write_text('whitelist:\n  - ip: 192.0.2.1\n    description: My monitor\n')
+        before = labels.read_bytes()
+        catalog = self.root / "usr/share/netmon/providers.json.gz"
+        catalog.parent.mkdir(parents=True)
+        catalog.write_bytes(b"old catalog")
+        result = self.run_install("new-good")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(labels.read_bytes(), before)
+        self.assertEqual(catalog.read_bytes(), (ROOT / "data/providers/catalog.json.gz").read_bytes())
 
     def test_failed_new_service_rolls_back_binary_and_unit(self):
         result = self.run_install("new-bad")

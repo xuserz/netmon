@@ -4,6 +4,14 @@ netmon source is covered by [LICENSE](LICENSE). Binaries include the following
 components under their own terms. Module versions are pinned in go.mod; musl is
 used by static builds. The upstream license notices are reproduced below.
 
+Release archives also include an offline IP-range snapshot derived from
+[rezmoss/cloud-provider-ip-addresses](https://github.com/rezmoss/cloud-provider-ip-addresses),
+under **CC0-1.0**. The original license is preserved in
+[data/providers/LICENSE](data/providers/LICENSE); snapshot revision, sources and
+checksums are recorded in [data/providers/manifest.json](data/providers/manifest.json).
+Installed copies are `/usr/share/doc/netmon/provider-data-LICENSE` and
+`provider-data-manifest.json`. See [provider labels](docs/providers.md).
+
 ## Go runtime and golang.org/x/sys (BSD-3-Clause)
 
 ```text

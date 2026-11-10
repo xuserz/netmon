@@ -164,6 +164,22 @@ func (r *Runtime) start() {
 			}
 		}
 	}()
+	if r.cfg.Cluster.Enabled {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			ticker := time.NewTicker(r.transport.heartbeatInterval())
+			defer ticker.Stop()
+			for {
+				r.transport.probe(ctx)
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -330,16 +346,20 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 	health.QueueRejected = r.queue.rejected.Load()
 	health.DiscardedSamples = r.queue.discarded.Load()
 	peers := r.transport.list()
-	health.ClusterPeers = len(peers)
-	for _, p := range peers {
-		if p.Error == "" && p.Success > 0 && time.Since(time.Unix(p.Success, 0)) < 3*cappedInterval(r.cfg.Cluster.SyncInterval) {
+	nodes, evictions := r.transport.presence.snapshot(peers, time.Now(), r.transport.contactTTL(), true)
+	health.NodeCacheEvictions = evictions
+	health.ClusterPeers = len(nodes)
+	for _, node := range nodes {
+		if node.Online {
 			health.ClusterOnline++
 		}
+	}
+	for _, p := range peers {
 		if p.Success > health.ClusterLastSync.Unix() {
 			health.ClusterLastSync = time.Unix(p.Success, 0)
 		}
 	}
-	return live.Response{Network: true, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
+	return live.Response{Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
 }
 func (r *Runtime) close() {
 	if r.cancel != nil {

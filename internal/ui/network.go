@@ -47,7 +47,11 @@ func renderNetwork(s State, width, height int) string {
 	} else if !s.Data.SnapshotAt.IsZero() && time.Since(s.Data.SnapshotAt) > 3*time.Second {
 		scope += " · STALE"
 	}
-	box(" "+scope+"   "+h.Interface, 120)
+	connections := "standalone"
+	if h.ClusterEnabled {
+		connections = fmt.Sprintf("Nodes %d/%d online", h.ClusterOnline, h.ClusterPeers)
+	}
+	box(" "+connections+" · "+scope+"   "+h.Interface, 120)
 	box(fmt.Sprintf(" Packets %s   IPs %s   Bytes %s", number(strconv.FormatInt(t.Packets, 10)), number(strconv.FormatInt(t.IPs, 10)), bytes(uint64(max(int64(0), t.Bytes)))), 255)
 	if height >= 14 {
 		box(fmt.Sprintf(" Local %.1f packets/s   CPU %.1f%%   RAM %s", s.Rate, s.CPU, bytes(h.RSSBytes)), 153)
@@ -79,10 +83,83 @@ func renderNetwork(s State, width, height int) string {
 		warning = " ! " + h.FlushError
 	} else if h.Storage.Error != "" {
 		warning = " ! Storage metrics: " + h.Storage.Error
+	} else if h.NodeCacheEvictions > 0 {
+		warning = " ! Incoming node cache limit reached; some contacts are omitted"
 	} else if h.DiscardedSamples > 0 {
 		warning = " ! Some RAM observations were discarded; statistics may be incomplete"
 	}
 	box(warning, 220)
+	if s.Nodes {
+		edge("NODE CONNECTIONS · local authenticated contacts")
+		nameWidth := max(6, inner-28)
+		wide := inner >= 78
+		if wide {
+			nameWidth = max(6, inner-47)
+		}
+		format := func(state, role, name, seen, rtt, pending string) string {
+			text := fmt.Sprintf(" %-9s %-7s %-*s %8s", cut(state, 9), cut(role, 7), nameWidth, cut(name, nameWidth), cut(seen, 8))
+			if wide {
+				text += fmt.Sprintf(" %8s %9s", cut(rtt, 8), cut(pending, 9))
+			}
+			return text
+		}
+		box(format("STATE", "ROLE", "NAME / NODE", "SEEN", "RTT", "SYNC GAP"), 109)
+		available := height - len(lines) - 2
+		visible := max(1, (available+1)/2)
+		offset := max(0, min(s.Offset, max(0, len(s.Data.NetworkNodes)-visible)))
+		for i := 0; i < available; i++ {
+			index := offset + i/2
+			if index >= len(s.Data.NetworkNodes) {
+				if i == 0 {
+					box(" No node contacts yet; check cluster configuration", 146)
+				} else {
+					box("", 255)
+				}
+				continue
+			}
+			node := s.Data.NetworkNodes[index]
+			color := 146
+			switch node.State {
+			case "ONLINE":
+				color = 120
+			case "DEGRADED", "UNKNOWN":
+				color = 220
+			case "OFFLINE":
+				color = 203
+			}
+			if i%2 == 0 {
+				name := node.Name
+				if name == "" {
+					name = node.Node
+				}
+				if name == "" {
+					name = "unidentified"
+				}
+				rtt := "-"
+				if !node.LastAttempt.IsZero() && !node.LastSeen.IsZero() {
+					rtt = fmt.Sprintf("%.1fms", node.RTTMillis)
+				}
+				pending := "-"
+				if node.SyncKnown {
+					pending = strconv.FormatInt(max(int64(0), node.Head-node.Cursor), 10)
+				}
+				box(format(node.State, node.Role, name, ago(node.LastSeen), rtt, pending), color)
+			} else {
+				detail := " " + node.Direction + " · " + node.Address
+				if node.SyncError != "" {
+					detail += " · SYNC: " + node.SyncError
+				} else if node.Error != "" {
+					detail += " · " + node.Error
+				} else if node.Node != "" {
+					detail += " · id " + cut(node.Node, 8)
+				}
+				box(detail, color)
+			}
+		}
+		edge("q quit · n IPs · ↑↓ scroll · space pause · r refresh")
+		lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
+		return strings.Join(lines, "\r\n")
+	}
 	edge("IP ACTIVITY · sort " + s.Sort)
 	// Keep descriptions visible on narrow terminals; SYN gets its own
 	// column when the terminal has room. The per-IP detail remains complete.
@@ -95,7 +172,7 @@ func renderNetwork(s State, width, height int) string {
 	showSYN := inner >= 98
 	if inner >= 78 {
 		countWidth = 10
-		tagWidth = 9
+		tagWidth = 10
 	}
 	labelWidth := inner - (1 + ipWidth + 1 + 4 + 1 + countWidth + 1 + tagWidth + 1)
 	if showSYN {
@@ -135,7 +212,7 @@ func renderNetwork(s State, width, height int) string {
 		} else if row.Score > 0 {
 			color = 153
 		}
-		tag := row.Tag()
+		tag := row.DisplayTag()
 		if tagWidth == 3 {
 			if row.ServerName != "" && row.Whitelisted {
 				tag = "S+W"
@@ -147,7 +224,7 @@ func renderNetwork(s State, width, height int) string {
 		}
 		box(formatRow(row.IP, strconv.Itoa(row.Score), number(strconv.FormatInt(row.Packets, 10)), number(strconv.FormatInt(row.SYN, 10)), tag, row.Label()), color)
 	}
-	edge("q quit · ↑↓ scroll · space pause · r refresh · c color · s sort")
+	edge("q quit · n nodes · ↑↓ scroll · space pause · r refresh · c color · s sort")
 	lines = append(lines, paint("╰"+strings.Repeat("─", inner)+"╯", 60, s.Color))
 	return strings.Join(lines, "\r\n")
 }
@@ -170,4 +247,12 @@ func storageBytes(n int64) string {
 		}
 	}
 	return fmt.Sprintf("%d B", n)
+}
+
+func (s State) networkPageRows(height int) int {
+	rows := networkPageRows(height)
+	if s.Nodes {
+		return max(1, (rows+1)/2)
+	}
+	return rows
 }

@@ -236,3 +236,20 @@ IPs, kernel drops, concurrent dashboard snapshots, CPU, and RSS. DNS-mode load
 figures do not establish network-mode performance; neither is a VPS capacity
 guarantee. Forward nodes can lose unacknowledged RAM; tests deliberately verify
 outage/recovery separately from persistent storage replication.
+
+Network payload storage has round-trip, mixed-format replay, malformed/truncated
+input, integer-boundary and fuzz coverage. Compaction tests compare canonical
+sample/version/priority digests, per-IP views, totals, node identity/epoch and
+peer cursors; they check source-file preservation and failed-publication cleanup.
+The process test stops the monitor, compacts, switches paths and resumes counters.
+
+Measure the codec independently with:
+
+```sh
+go test ./internal/network -run '^$' -bench '^BenchmarkSampleCodec$' -benchmem
+```
+
+`TestCompactCopyPreservesHistoryIdentityCursorsAndOriginalFile` logs a storage
+comparison for 5000 synthetic node/IP/minute observations. Both baseline and
+output are vacuumed; it is a reproducible workload comparison, not a prediction
+for another server's traffic. The existing seven indexes are included.

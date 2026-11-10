@@ -6,7 +6,7 @@ Network mode observes incoming IP traffic on one Linux interface. It counts
 packets and IP bytes, including headers, by source address. TCP, SYN without ACK,
 UDP, and ICMP counters describe packet types. SYN retransmissions count again;
 these counters do not establish successful connections or application requests.
-No payload, DNS name, URL, or packet capture is persisted. Stored observations
+No packet payload, DNS name, URL, or packet capture is persisted. Stored observations
 contain source/node identities, minute windows, counters, bounded SYN destination
 port samples, rating evidence, and synchronization metadata.
 
@@ -42,6 +42,10 @@ submission; review evidence before publishing a feed.
 
 ## Own servers and whitelist
 
+Automatic cloud/CDN/bot/VPN/Tor attribution is described in
+[offline provider labels](providers.md). These labels do not grant trust or
+alter traffic counters and suspicion scores.
+
 Labels describe **source** addresses already present in statistics. SERVER means
 an explicitly configured own server/subnet, a local address on the selected
 interface, or a literal IP in configured/discovered cluster endpoints. It is
@@ -50,7 +54,8 @@ that source address. Automatic node hints show their provenance in `show IP`.
 Hostnames are not resolved for identity lookup; add public/NAT/forward-node IPs
 explicitly when they are not available from those local hints.
 
-WL marks your whitelist entry. A source can have both SERVER and WL. Counts,
+TRUSTED marks your whitelist entry (abbreviated W in narrow terminals). A source
+can have both SERVER and whitelist status, shown as SERVER+WL. Counts,
 score, reasons, ordering and packet capture stay unchanged for both labels;
 whitelisted high-risk traffic remains visible. No firewall rules are modified.
 
@@ -121,6 +126,8 @@ A running `top` reloads catalog edits on its next refresh, without restarting th
 monitor or dashboard. Automatic interface/peer hints refresh at most every 15s.
 Full `list` and CSV freeze labels for the duration of that export. CSV appends
 `server_name,server_source,whitelisted,whitelist_description` to existing columns.
+Provider attribution adds `providers,provider_revision,provider_date` after those
+columns; see the [offline catalog guide](providers.md).
 The daemon's raw private Unix snapshots contain capture metrics; the CLI adds
 local descriptions. Schema, stored packet counters and replication protocol are
 unchanged, so no database migration or rating-policy reset is required.
@@ -277,6 +284,93 @@ current-process RAM view; there is no durable global history there. Packet total
 cover the process lifetime, while the IP count/list describes cached entries and
 per-IP counters reset on cache eviction. `list` is limited by `-n` (maximum 1000)
 in this mode. Query a full node for shared history or CSV export.
+
+## Observation storage format
+
+New observations use a versioned binary payload (`NM`, version 1) in SQLite.
+The existing SQL columns hold observation ID, node ID, IP and minute exactly
+once. The payload stores the complete name, protocol/byte/packet counters,
+first/last offsets within the minute, peak PPS, ordered port sample, evidence
+(including its time relative to the minute) and partial flag. Integers use varints;
+there is no lossy rounding, time rollup, port truncation beyond the existing
+capture policy, or removal of indexes. The evidence JSON in the small per-IP
+summary table is unchanged.
+
+Both legacy JSON payloads and compact payloads are readable in the same database.
+An unchanged legacy observation replay does not bump its version just because
+the encoding differs. Updated observations use the compact encoding. Network
+v3 messages continue to exchange the exact same JSON sample fields, and CSV/top/
+show output has the same statistical meaning. Nodes on older network v3 binaries
+can still exchange observations using their own legacy storage; the **same
+compact database file** requires the updated reader. Upgrade all full members to
+benefit from the same storage density: an older, less compact full node can still
+advance the cluster-wide cleanup boundary at its own capacity limit. Retain an appropriate backup
+before downgrading an executable.
+
+Existing historical JSON records are not rewritten during capture. To shrink
+already allocated files, use [the compact-copy maintenance workflow](operations.md#compact-network-history).
+It preserves node identity, epoch, sequence, peer cursors, cleanup boundary,
+minute windows, priority, all observations and aggregate totals. It creates a
+separate checked file and requires the configured runtime to be stopped, so
+switching paths does not omit observations arriving after a live snapshot.
+
+## Node presence and connections
+
+```sh
+netmon nodes                    # One local node/contact snapshot
+netmon nodes --json              # Structured snapshot for automation
+netmon nodes --watch             # Live dashboard; n switches to IPs
+netmon top --nodes               # Start on the node view
+netmon top --nodes --once        # Plain text for pipes
+```
+
+Press **n** in network `top` to switch between IPs and node connections. Both
+views support scrolling, Home/End, PageUp/PageDown, pause, refresh and clean
+terminal restoration. `-n` limits IP rows, not the bounded node/contact list.
+The header shows the online/known remote node count; the local node is excluded.
+Names come from `cluster.name` (or the hostname). Roles are `full` and `forward`;
+links are IN, OUT or BOTH, merged by authenticated node ID. Full details in the
+plain/JSON `nodes` output include ID, contact/delivery/sync times and cursor/head.
+`SYNC GAP` is the last advertised replication head minus the committed cursor;
+it counts version distance, not pending packets. `-` means no committed sync
+position is known, as is normal for a forward sender. RTT is application request
+round-trip time for outgoing contacts; inbound-only sensors show `-`.
+
+- ONLINE: a recent successful authenticated contact.
+- DEGRADED: recent contact exists, with a connection or synchronization error.
+  A heartbeat can prove reachability without proving that storage commits work.
+- OFFLINE: contacts have expired, or a first connection attempt failed.
+- UNKNOWN: a configured/discovered endpoint has not been verified this run.
+- STALE: a saved record read while the local full-node daemon is unavailable.
+  Such records never count as online. Offline forward reads fail explicitly.
+
+Presence is **local contact history**, not a global membership authority or an
+open-TCP-socket counter. Each sensor checks all its discovered storage endpoints,
+so connected/discovered full nodes can see it even if another storage node is
+accepting its data. A storage node cannot list an undiscovered sensor that has
+never contacted it. Only validated messages with a matching TLS node identity
+refresh presence; untrusted traffic does not create node entries.
+
+Heartbeats run independently of capture and delivery, at the smaller of
+`cluster.sync_interval` and 10s, with at most four outgoing probes at once.
+They reuse authenticated bounded ingest messages with no observations. Updated
+receivers reply without touching statistics or replication cursors; heartbeats
+do not increment delivery ACKs or update last durable delivery. Existing network
+v3 peers accept empty ingests, so this extension needs no protocol/database reset;
+update both endpoints for complete idle-sensor visibility and diagnostics.
+Online lifetime is at least 15s, extended for configured heartbeat interval and
+bounded probe rounds (up to 70s with 32 known endpoints). An orderly exit does not
+immediately declare a node offline; loss of contact is detected after this grace
+period. Contact state is sampled when a local view is requested.
+
+Contact metadata stays in RAM, including on full nodes: at most 32 outgoing
+storage endpoints and 128 recent incoming node identities. Duplicate incoming
+identities refresh an entry; new identities at the cap replace the oldest and
+increment a visible cache-eviction counter. Forward nodes still have no SQLite
+history or spool. Full-node offline fallback reads existing saved replication
+peers plus configured endpoints, not a persistent list of all sensors. After a
+restart live endpoints begin UNKNOWN and sensors reappear through fresh contact.
+No heartbeat or node lookup is added to the per-packet capture path.
 
 ## Retention, consistency, and capacity
 

@@ -150,3 +150,29 @@ func TestNetworkStorageMetricsRemainVisibleAtSmallHeights(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+func TestNetworkNodePanelFitsAndKeepsPeerErrorsVisible(t *testing.T) {
+	now := time.Now()
+	s := State{Nodes: true, Color: true, Data: live.Response{Network: true, Source: "live", SnapshotAt: now, Health: live.Health{ClusterEnabled: true, ClusterOnline: 1, ClusterPeers: 2}, NetworkNodes: []live.NetworkNode{{Name: "edge-eu", Role: "forward", State: "ONLINE", Online: true, Direction: "IN", Address: "192.0.2.1", LastSeen: now}, {Name: "storage-us", Role: "full", State: "OFFLINE", Address: "192.0.2.2", Error: "connection refused"}}}}
+	for _, size := range [][2]int{{1, 1}, {50, 12}, {80, 13}, {80, 14}, {110, 24}, {180, 40}} {
+		output := ansi.ReplaceAllString(Render(s, size[0], size[1]), "")
+		lines := strings.Split(output, "\r\n")
+		if len(lines) != size[1] {
+			t.Fatal(size, len(lines))
+		}
+		for _, line := range lines {
+			if len([]rune(line)) != size[0] {
+				t.Fatal(size, line)
+			}
+		}
+	}
+	output := Render(s, 110, 24)
+	for _, want := range []string{"Nodes 1/2 online", "NODE CONNECTIONS", "edge-eu", "forward", "connection refused", "n IPs"} {
+		if !strings.Contains(output, want) {
+			t.Fatal(want, output)
+		}
+	}
+	if !strings.Contains(output, "\x1b[38;5;203m") || !strings.Contains(output, "\x1b[38;5;120m") {
+		t.Fatal(output)
+	}
+}

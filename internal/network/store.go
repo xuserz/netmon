@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -216,14 +217,25 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 					return err
 				}
 			}
-			pressure, err := s.capacityPressure(ctx)
-			if err != nil {
-				return err
+			for {
+				pressure, err := s.capacityPressure(ctx)
+				if err != nil {
+					return err
+				}
+				if !pressure {
+					return nil
+				}
+				n, err := s.pruneLocked(ctx, true)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return nil
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 			}
-			if pressure {
-				_, err = s.pruneLocked(ctx, true)
-			}
-			return err
 		}
 		var sqliteErr sqlite3.Error
 		if !errors.As(e, &sqliteErr) || sqliteErr.Code != sqlite3.ErrFull {
@@ -287,7 +299,7 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 		return e
 	}
 	queries := []string{
-		"SELECT payload FROM net_observations WHERE id=?",
+		"SELECT " + sampleColumns + " FROM net_observations WHERE id=?",
 		`INSERT INTO net_observations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,priority=excluded.priority,payload=excluded.payload`,
 		"SELECT ip,packets,bytes,tcp,syn,udp,icmp,first,last,peak,evidence,partial FROM net_ips WHERE ip=?",
 		`INSERT INTO net_ips VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET packets=excluded.packets,bytes=excluded.bytes,tcp=excluded.tcp,syn=excluded.syn,udp=excluded.udp,icmp=excluded.icmp,first=excluded.first,last=excluded.last,peak=excluded.peak,evidence=excluded.evidence,priority=excluded.priority,partial=excluded.partial`,
@@ -305,17 +317,11 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 		if item.Window < floor {
 			continue
 		}
-		var raw []byte
-		var old observation.Sample
-		e = stmts[0].QueryRowContext(ctx, item.ID).Scan(&raw)
+		old, e := scanSample(stmts[0].QueryRowContext(ctx, item.ID))
 		if e != nil && !errors.Is(e, sql.ErrNoRows) {
 			return e
 		}
-		if e == nil {
-			if e = json.Unmarshal(raw, &old); e != nil {
-				return e
-			}
-		}
+
 		next, err := mergeSample(old, item, s.policy)
 		if err != nil {
 			return err
@@ -323,8 +329,8 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 		if e := next.Validate(now, s.retention); e != nil {
 			return e
 		}
-		encoded, _ := json.Marshal(next)
-		if string(raw) == string(encoded) {
+		encoded := encodeSample(next)
+		if old.ID != "" && bytes.Equal(encodeSample(old), encoded) {
 			continue
 		}
 		row, evidence, e := scanIP(stmts[2].QueryRowContext(ctx, item.IP), s.policy, now)
@@ -476,7 +482,7 @@ func (s *disk) Page(ctx context.Context, epoch string, after int64) (Page, error
 	if s.retention > 0 {
 		minimum = max(minimum, time.Now().Add(-s.retention).Unix()-59)
 	}
-	rows, e := tx.QueryContext(ctx, "SELECT payload,version FROM net_observations WHERE version>? AND version<=? AND window>=? ORDER BY version LIMIT 128", after, page.Head, minimum)
+	rows, e := tx.QueryContext(ctx, "SELECT "+sampleColumns+",version FROM net_observations WHERE version>? AND version<=? AND window>=? ORDER BY version LIMIT 128", after, page.Head, minimum)
 	if e != nil {
 		return page, e
 	}
@@ -485,19 +491,22 @@ func (s *disk) Page(ctx context.Context, epoch string, after int64) (Page, error
 	size := 0
 	for rows.Next() {
 		var raw []byte
-		var version int64
-		if e = rows.Scan(&raw, &version); e != nil {
+		var id, node, ip string
+		var window, version int64
+		if e = rows.Scan(&id, &node, &ip, &window, &raw, &version); e != nil {
 			return page, e
 		}
-		if size+len(raw) > 1<<20 && len(page.Samples) > 0 {
+		sample, err := decodeSample(id, node, ip, window, raw)
+		if err != nil {
+			return page, err
+		}
+		wire, _ := json.Marshal(sample)
+		if size+len(wire) > 1<<20 && len(page.Samples) > 0 {
 			return page, nil
 		}
-		var sample observation.Sample
-		if e = json.Unmarshal(raw, &sample); e != nil {
-			return page, e
-		}
+
 		page.Samples = append(page.Samples, sample)
-		size += len(raw)
+		size += len(wire)
 		page.Cursor = version
 	}
 	if e = rows.Err(); e != nil {
@@ -568,27 +577,22 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 			}
 		}
 	}
-	rows, e := tx.QueryContext(ctx, "SELECT id,ip,payload FROM net_observations WHERE window<? ORDER BY window,id LIMIT 128", minimum)
+	rows, e := tx.QueryContext(ctx, "SELECT "+sampleColumns+" FROM net_observations WHERE window<? ORDER BY window,id LIMIT 128", minimum)
 	if e != nil {
 		return 0, e
 	}
 	var ids []string
 	expired := map[string]observation.Counters{}
 	for rows.Next() {
-		var id, ip string
-		var raw []byte
-		var sample observation.Sample
-		if e = rows.Scan(&id, &ip, &raw); e != nil {
+		item, err := scanSample(rows)
+		if err != nil {
 			rows.Close()
-			return 0, e
+			return 0, err
 		}
-		if e = json.Unmarshal(raw, &sample); e != nil {
-			rows.Close()
-			return 0, e
-		}
-		ids = append(ids, id)
-		expired[ip] = expired[ip].Plus(sample.Counters)
+		ids = append(ids, item.ID)
+		expired[item.IP] = expired[item.IP].Plus(item.Counters)
 	}
+
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
@@ -614,8 +618,7 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		next := row.Counters.Minus(removed)
 		totals.Counters = totals.Counters.Minus(row.Counters)
 		totals.Counters = totals.Counters.Plus(next)
-		var raw []byte
-		err = tx.QueryRowContext(ctx, "SELECT payload FROM net_observations WHERE ip=? ORDER BY priority DESC LIMIT 1", ip).Scan(&raw)
+		best, err := scanSample(tx.QueryRowContext(ctx, "SELECT "+sampleColumns+" FROM net_observations WHERE ip=? ORDER BY priority DESC LIMIT 1", ip))
 		if errors.Is(err, sql.ErrNoRows) {
 			totals.IPs--
 			if _, e = tx.ExecContext(ctx, "DELETE FROM net_ips WHERE ip=?", ip); e != nil {
@@ -625,10 +628,6 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		}
 		if err != nil {
 			return 0, err
-		}
-		var best observation.Sample
-		if e = json.Unmarshal(raw, &best); e != nil {
-			return 0, e
 		}
 		risk, _ := json.Marshal(best.Evidence)
 		if _, e = tx.ExecContext(ctx, "UPDATE net_ips SET packets=?,bytes=?,tcp=?,syn=?,udp=?,icmp=?,evidence=?,priority=? WHERE ip=?", next.Packets, next.Bytes, next.TCP, next.SYN, next.UDP, next.ICMP, risk, s.policy.Priority(best.Evidence), ip); e != nil {
@@ -681,12 +680,15 @@ func limitedError(e error) string {
 	if e == nil {
 		return ""
 	}
+	return limitedText(e.Error())
+}
+func limitedText(value string) string {
 	s := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return '?'
 		}
 		return r
-	}, e.Error())
+	}, value)
 	if len(s) > 256 {
 		s = s[:256]
 	}

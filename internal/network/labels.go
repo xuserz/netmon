@@ -14,6 +14,7 @@ import (
 	"netmon/internal/config"
 	"netmon/internal/identity"
 	"netmon/internal/observation"
+	"netmon/internal/providers"
 )
 
 type serverLabel struct{ name, source string }
@@ -21,6 +22,7 @@ type serverLabel struct{ name, source string }
 // Labeler adds local address-book metadata outside the capture/write path.
 // Explicit server labels override interface/cluster address hints.
 type Labeler struct {
+	providers providers.Loader
 	cfg       config.Config
 	book      identity.Loader
 	mu        sync.Mutex
@@ -29,7 +31,7 @@ type Labeler struct {
 }
 
 func NewLabeler(c config.Config) *Labeler {
-	return &Labeler{cfg: c, book: identity.Loader{Path: c.LabelsFile}}
+	return &Labeler{providers: providers.Loader{Path: c.ProvidersFile}, cfg: c, book: identity.Loader{Path: c.LabelsFile}}
 }
 func (l *Labeler) refresh() {
 	if time.Since(l.refreshed) < 15*time.Second {
@@ -107,6 +109,10 @@ func (l *Labeler) Snapshot() (func(*observation.IP), error) {
 	if e != nil {
 		return nil, e
 	}
+	catalog, e := l.providers.Snapshot()
+	if e != nil {
+		return nil, e
+	}
 	l.mu.Lock()
 	l.refresh()
 	automatic := l.automatic
@@ -116,11 +122,19 @@ func (l *Labeler) Snapshot() (func(*observation.IP), error) {
 		row.ServerSource = ""
 		row.Whitelisted = false
 		row.WhitelistDescription = ""
+		row.Providers = nil
+		row.ProviderRevision = ""
+		row.ProviderDate = ""
 		ip, e := netip.ParseAddr(row.IP)
 		if e != nil {
 			return
 		}
 		ip = ip.Unmap()
+		row.Providers = catalog.Lookup(ip)
+		if len(row.Providers) > 0 {
+			row.ProviderRevision = catalog.Metadata.Revision
+			row.ProviderDate = catalog.Metadata.Generated
+		}
 		if hint, exists := automatic[ip]; exists {
 			row.ServerName = hint.name
 			row.ServerSource = hint.source

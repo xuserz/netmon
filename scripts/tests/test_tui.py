@@ -3,6 +3,7 @@ from contextlib import closing
 import datetime
 import errno
 import json
+import gzip
 import socket
 import threading
 import fcntl
@@ -128,7 +129,7 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"Unique IPs: 100", output)
         self.assertEqual(output.count(b"192.0.2."), 3)
 
-    def live_server(self, slow=False, network=False, storage=None, network_rows=None):
+    def live_server(self, slow=False, network=False, storage=None, network_rows=None, network_nodes=None):
         listener = socket.socket(socket.AF_UNIX)
         try:
             if network:
@@ -181,6 +182,9 @@ class TerminalTests(unittest.TestCase):
                             response["health"]["storage"] = storage
                         if network and network_rows is not None:
                             response["network_ips"] = network_rows
+                        if network and network_nodes is not None:
+                            response["network_nodes"] = network_nodes
+                            response["health"].update(cluster_enabled=True, cluster_online=sum(n.get("online", False) for n in network_nodes), cluster_peers=len(network_nodes))
                         conn.sendall(json.dumps(response).encode() + b"\n")
                     except OSError:
                         pass
@@ -313,6 +317,44 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.quit_and_verify_restore()
 
+    def test_offline_provider_reload_keeps_risk_and_requires_explicit_trust(self):
+        self.live_server(network=True, network_rows=[{
+            "ip": "104.16.1.2", "packets": 777777, "suspicion": 85}])
+        directory = Path(self.temp.name)
+        config, catalog, labels = (directory / name for name in ("config.yaml", "providers.gz", "labels.yaml"))
+        packed = (ROOT / "data/providers/catalog.json.gz").read_bytes()
+        catalog.write_bytes(packed)
+        config.write_text(f'mode: network\nproviders_file: {catalog}\nlabels_file: {labels}\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {directory / "run"}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n')
+        self.start("--config", str(config), wait_for=b"Cloudflare")
+        self.assertIn(b"CDN", self.data)
+        self.assertIn(b"85", self.data)
+        self.assertNotIn(b"TRUSTED", self.data)
+        # Atomic catalog replacement must refresh without restarting top.
+        value = json.loads(gzip.decompress(packed))
+        for provider in value["providers"]:
+            if provider["id"] == "cloudflare":
+                provider["name"] = "Cloudflare Next"
+        replacement = directory / "replacement.gz"
+        replacement.write_bytes(gzip.compress(json.dumps(value).encode()))
+        replacement.replace(catalog)
+        self.data = b""
+        self.until(b"Cloudflare Next", complete_frame=True)
+        # Corrupt data reports an error, retaining the last good display.
+        catalog.write_bytes(b"corrupt gzip")
+        self.data = b""
+        self.until(b"provider catalog", complete_frame=True)
+        self.assertIn(b"Cloudflare Next", self.data)
+        replacement.write_bytes(packed)
+        replacement.replace(catalog)
+        result = subprocess.run([str(BINARY), "--config", str(config), "whitelist", "add", "104.16.1.2", "My monitor"],
+                                capture_output=True, text=True, timeout=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.data = b""
+        self.until(b"TRUSTED", complete_frame=True)
+        self.assertIn(b"Cloudflare (CDN)", self.data)
+        self.assertIn(b"85", self.data)
+        self.quit_and_verify_restore()
+
     def test_network_storage_space_updates_and_end_reaches_last_ip(self):
         storage = {"enabled": True, "database_known": True, "disk_known": True,
                    "database_bytes": 2 << 20, "limit_bytes": 20 << 30,
@@ -331,4 +373,31 @@ class TerminalTests(unittest.TestCase):
         self.data = b""
         os.write(self.master, b"\x1b[F")
         self.until(b"192.0.2.100")
+        self.quit_and_verify_restore()
+
+    def test_network_nodes_toggle_watch_and_scrolling(self):
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        nodes = [{"node": f"{i:032x}", "name": f"edge-{i:03}", "role": "forward",
+                  "direction": "IN", "address": f"192.0.2.{i}", "state": "ONLINE",
+                  "online": True, "last_seen": now} for i in range(1, 41)]
+        self.live_server(network=True, network_nodes=nodes)
+        config = Path(self.temp.name) / "nodes.yaml"
+        config.write_text(f"mode: network\nlabels_file: \"\"\nstorage:\n  mode: forward\nnetwork:\n  runtime_directory: {Path(self.temp.name) / 'run'}\ncluster:\n  enabled: true\n  key_file: /unused-test-key\n  peers: [https://127.0.0.1:9845]\n")
+        self.start("--config", str(config), wait_for=b"192.0.2.77")
+        self.until(b"Nodes 40/40 online")
+        self.data = b""
+        os.write(self.master, b"n")
+        self.until(b"NODE CONNECTIONS")
+        self.until(b"edge-001")
+        self.data = b""
+        os.write(self.master, b"\x1b[F")
+        self.until(b"edge-040")
+        self.data = b""
+        os.write(self.master, b"n")
+        self.until(b"IP ACTIVITY")
+        self.until(b"192.0.2.77")
+        self.quit_and_verify_restore()
+        self.data = b""
+        self.start("--config", str(config), "--nodes", wait_for=b"edge-001")
+        self.until(b"NODE CONNECTIONS")
         self.quit_and_verify_restore()

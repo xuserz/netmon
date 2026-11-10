@@ -17,6 +17,7 @@ multiple servers with encrypted peer-to-peer synchronization.
 - **Forward nodes** capture and send observations using bounded RAM, without a local statistics database.
 - Keep history until the database fills, then remove oldest minute windows first.
 - Live database/WAL size, capacity, filesystem free space and write headroom.
+- Offline cloud/CDN/bot/provider labels, separate from your explicit TRUSTED whitelist.
 - Passive PACKET_MMAP capture before Docker NAT; no firewall changes or automatic blocking.
 - Static **amd64/arm64** releases with SQLite included; Go is not required on the server.
 - Legacy DNS query accounting remains available through `mode: dns`.
@@ -98,12 +99,19 @@ netmon top --sort syn
 netmon top -n 100 --interval 1s
 netmon top --once                   # Plain text snapshot
 netmon top --no-color
+netmon providers                    # Local provider catalog date/revision
+netmon providers lookup 104.16.1.2  # Offline range attribution
 netmon show 192.0.2.10              # Counters, score, reasons
 netmon stats                       # Shared saved window on full nodes
 netmon stats --local               # Bounded RAM view of this process
 netmon list                        # All saved IPs; uses a temporary DB snapshot
 netmon export --csv stats.csv
-netmon nodes                       # Storage peer identities and errors
+# Stopped full node only: verified compact copy, original retained
+netmon compact --output /var/lib/netmon/stats-packed.network.db
+netmon nodes                       # Online/offline nodes, roles, links and errors
+netmon nodes --watch               # Live node dashboard
+netmon nodes --json                # Machine-readable contact state
+netmon top --nodes                 # Start top on the node view
 netmon status                      # Capture, queue and delivery diagnostics
 ```
 
@@ -112,9 +120,28 @@ Use `sudo` or an account in the `netmon` group (`dnsmon` on migrated installatio
 another capture process.
 
 In the dashboard: arrows or `j/k` scroll, PageUp/PageDown navigate, Space pauses,
-`r` refreshes, `c` toggles color, and `s` cycles the four rankings. `NO_COLOR` is
+`r` refreshes, `c` toggles color, `s` cycles the four rankings, and `n` switches
+between IP activity and node connections. `NO_COLOR` is
 supported. Full-node views show committed shared data and can lag behind capture;
 `--local` and forward-node views show a bounded sample of current-process activity.
+
+Network dashboards show how many known remote nodes are online. The node view
+includes full/forward roles, names, addresses, incoming/outgoing links, last
+contact, request RTT, synchronization version gap, and connection/storage errors.
+Idle authenticated heartbeats keep forward sensors visible without generating
+observations or opening a sensor database. Offline full-node reads mark saved
+peers **STALE**, rather than claiming they are online. See
+[node presence](docs/network.md#node-presence-and-connections) for state meanings
+and cache bounds.
+
+New network observations use a compact binary payload, with ID, node, IP and
+minute stored once in their existing SQL columns. Minute detail, counters, risk
+evidence and indexes remain intact; network v3 messages and CSV remain unchanged.
+Existing JSON observations are read alongside compact records. Updating the
+executable reduces growth of new history; reclaiming existing files is an explicit
+maintenance operation. See [lossless database compaction](docs/operations.md#compact-network-history)
+for the verified-copy workflow and path switch. Older executables cannot read the
+new payload format; keep a backup compatible with the executable you intend to run.
 
 ## Own servers and whitelist
 
@@ -203,6 +230,9 @@ configurations, rating rules, failure behavior, and migration instructions.
 
 ## Configuration and operations
 
+See [offline provider labels](docs/providers.md) for local range matching,
+TRUSTED whitelist behavior and catalog updates without an API.
+
 See [netmon.yaml](netmon.yaml) and the [configuration reference](docs/configuration.md).
 After editing the configuration, run `netmon check --startup` and restart the service.
 History has no age limit by default; the database cap controls when oldest windows
@@ -244,6 +274,7 @@ publish static amd64 and arm64 release bundles.
 
 - [Network mode, suspicion rating, and storage roles](docs/network.md)
 - [Configuration and capture scope](docs/configuration.md)
+- [Offline provider labels and catalog updates](docs/providers.md)
 - [Legacy DNS peer-to-peer clustering](docs/cluster.md)
 - [Operations and troubleshooting](docs/operations.md)
 - [Development and testing](docs/development.md)
