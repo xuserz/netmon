@@ -1,4 +1,5 @@
 """PTY tests exercise the built executable, terminal restoration and live redraws."""
+from contextlib import closing
 import datetime
 import errno
 import json
@@ -13,10 +14,12 @@ import signal
 import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARY = Path(os.environ.get("NETMON_BINARY", ROOT / "bin/netmon"))
@@ -28,7 +31,7 @@ class TerminalTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.db = Path(self.temp.name) / "stats.db"
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute("CREATE TABLE clients(ip TEXT PRIMARY KEY,requests INTEGER,first_seen INTEGER,last_seen INTEGER)")
             conn.executemany("INSERT INTO clients VALUES(?,?,?,?)",
                              [(f"192.0.2.{i}", 123456 - i + 1, 1794272400, 1794272400) for i in range(1, 101)])
@@ -57,7 +60,9 @@ class TerminalTests(unittest.TestCase):
         while needle not in self.data and time.monotonic() < deadline:
             if select.select([self.master], [], [], .05)[0]:
                 self.data += os.read(self.master, 65536)
-            if self.process and self.process.poll() is not None:
+            # poll() can report exit before the terminal's buffered output has
+            # been consumed. Stop only once no further PTY data are readable.
+            elif self.process and self.process.poll() is not None:
                 break
         self.assertIn(needle, self.data, self.data.decode(errors="replace"))
 
@@ -103,7 +108,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_changed_database_appears_without_restarting_top(self):
         self.start()
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute("UPDATE clients SET requests=987654321 WHERE ip='192.0.2.1'")
         self.until(b"987,654,321")
         self.quit_and_verify_restore()
@@ -238,3 +243,18 @@ class TerminalTests(unittest.TestCase):
             os.write(self.master, b"s")
             self.until(b"sort " + kind)
         self.quit_and_verify_restore()
+
+    def test_exit_sequence_is_read_after_process_exit_and_fragmented_reads(self):
+        # A process can exit with several unread chunks still buffered by the PTY.
+        # Force small reads so the exit sequence cannot arrive in the first chunk.
+        payload = b"final terminal frame\r\n" * 64 + b"\x1b[?25h\x1b[?1049l"
+        self.process = subprocess.Popen(
+            [sys.executable, "-c", "import os; os.write(1, " + repr(payload) + ")"],
+            stdin=self.slave, stdout=self.slave, stderr=self.slave,
+            start_new_session=True)
+        self.process.wait(4)
+        self.assertEqual(self.process.returncode, 0)
+        real_read = os.read
+        with mock.patch.object(os, "read", side_effect=lambda fd, size: real_read(fd, min(size, 32))):
+            self.until(b"\x1b[?1049l")
+        self.assertIn(b"\x1b[?25h", self.data)

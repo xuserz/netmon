@@ -6,6 +6,12 @@ tags retroactively.
 
 ## Unreleased
 
+### Fixed
+
+- Drain buffered PTY output after the tested process exits, so terminal
+  restoration checks do not intermittently fail static-release CI. Add a
+  deterministic fragmented-output regression and close test SQLite connections.
+
 ### Changed
 
 - Rename dnsmon to netmon: executable, Go module/package paths, config/unit names,
