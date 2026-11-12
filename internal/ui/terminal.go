@@ -31,7 +31,7 @@ type Options struct {
 	Color    bool
 	Sort     string
 }
-type Fetcher func(context.Context, string) (live.Response, error)
+type Fetcher func(ctx context.Context, sort string, nodes bool) (live.Response, error)
 
 func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 	if opt.In == nil {
@@ -115,12 +115,16 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 			}
 		}
 	}()
+	type view struct {
+		sort  string
+		nodes bool
+	}
 	type result struct {
 		data live.Response
-		sort string
+		view view
 		err  error
 	}
-	requests := make(chan string, 1)
+	requests := make(chan view, 1)
 	results := make(chan result, 1)
 	workers.Add(1)
 	go func() {
@@ -129,12 +133,12 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 			select {
 			case <-ctx.Done():
 				return
-			case sort := <-requests:
+			case view := <-requests:
 				rctx, stop := context.WithTimeout(ctx, 2*time.Second)
-				data, e := fetch(rctx, sort)
+				data, e := fetch(rctx, view.sort, view.nodes)
 				stop()
 				select {
-				case results <- result{data, sort, e}:
+				case results <- result{data, view, e}:
 				case <-ctx.Done():
 					return
 				}
@@ -148,7 +152,7 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 	}
 	request := func() {
 		select {
-		case requests <- state.Sort:
+		case requests <- view{state.Sort, state.Nodes}:
 		default:
 		}
 	}
@@ -210,7 +214,7 @@ func Run(ctx context.Context, opt Options, fetch Fetcher) (err error) {
 				request()
 			}
 		case r := <-results:
-			if r.sort != state.Sort {
+			if r.view != (view{state.Sort, state.Nodes}) {
 				request()
 				continue
 			}

@@ -26,6 +26,13 @@ tags retroactively.
 
 ### Changed
 
+- Compute network IP rankings on demand for the selected sort and row limit.
+  `stats` and the node view read totals without building rankings.
+- Evaluate incident rules in one pass per IP window and commit the results
+  together with the analysis cursor. Reuse the journal compressor and avoid
+  updating unchanged totals during replay.
+- Reuse evicted flow entries and share immutable snapshots between the network
+  queue and local IP profiles.
 - Rename dnsmon to netmon: executable, Go module/package paths, config/unit names,
   install paths, documentation, environment variables, and CI/release archives.
 - Preserve database formats and authenticated cluster identities across the

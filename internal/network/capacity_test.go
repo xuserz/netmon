@@ -96,7 +96,7 @@ func TestUnlimitedAgeKeepsOldObservationsAndQueue(t *testing.T) {
 		t.Fatal(page, e)
 	}
 	q := newQueue(1 << 20)
-	if !q.put(old, nil) {
+	if _, ok := q.put(old, nil); !ok {
 		t.Fatal("queue rejected old observation")
 	}
 	if got := q.peek(1, 0); len(got) != 1 || q.discarded.Load() != 0 {
@@ -312,7 +312,7 @@ func TestCapacityRecoversLargeBatchAndCursorAfterSQLiteFull(t *testing.T) {
 		t.Fatal(e)
 	}
 	var changed bool
-	e = d.mergeOnce(ctx, incoming, &peer, 0, &changed)
+	e = d.mergeOnce(ctx, incoming, &peer, 0, &changed, nil, 0)
 	var full sqlite3.Error
 	if !errors.As(e, &full) || full.Code != sqlite3.ErrFull || changed {
 		t.Fatalf("fixture did not trigger a rolled-back SQLITE_FULL batch: %v", e)

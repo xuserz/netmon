@@ -66,18 +66,49 @@ func TestObservationReplayAndUpdatesAreCountedOnce(t *testing.T) {
 		t.Fatal(page, e)
 	}
 }
+
+func TestUnchangedObservationReplayStillPersistsPeerCursor(t *testing.T) {
+	ctx := context.Background()
+	d, err := openDisk(configForTest(t), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	item := sample(observation.ID(), 7)
+	if err := d.Merge(ctx, []observation.Sample{item}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.w.DB.Exec(`CREATE TRIGGER reject_totals BEFORE UPDATE ON net_totals
+		BEGIN SELECT RAISE(ABORT,'unchanged totals update'); END;
+		CREATE TRIGGER reject_sequence BEFORE UPDATE ON net_meta
+		BEGIN SELECT RAISE(ABORT,'unchanged sequence update'); END`); err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{URL: "https://192.0.2.1:9845", Cursor: 9}
+	if err := d.Merge(ctx, []observation.Sample{item}, &peer); err != nil {
+		t.Fatal(err)
+	}
+	peers, err := d.Peers(ctx)
+	if err != nil || len(peers) != 1 || peers[0].Cursor != peer.Cursor {
+		t.Fatal(peers, err)
+	}
+	page, err := d.Page(ctx, "", 0)
+	if err != nil || page.Head != 1 || len(page.Samples) != 1 || page.Samples[0].Packets != 7 {
+		t.Fatal(page, err)
+	}
+}
 func TestQueueCoalescesAndOldACKDoesNotRemoveNewSnapshot(t *testing.T) {
 	q := newQueue(800)
 	item := sample(observation.ID(), 1)
 	ack := &atomic.Int64{}
-	if !q.put(item, ack) {
+	if _, ok := q.put(item, ack); !ok {
 		t.Fatal("sample did not fit")
 	}
 	pending := q.peek(1, time.Hour)
 	item.Packets = 2
 	item.UDP = 2
 	item.Bytes = 200
-	if !q.put(item, ack) {
+	if _, ok := q.put(item, ack); !ok {
 		t.Fatal("replacement rejected")
 	}
 	q.confirm(pending)
@@ -87,7 +118,7 @@ func TestQueueCoalescesAndOldACKDoesNotRemoveNewSnapshot(t *testing.T) {
 	}
 	other := item
 	other.ID = observation.ID()
-	if q.put(other, nil) {
+	if _, ok := q.put(other, nil); ok {
 		t.Fatal("RAM budget exceeded")
 	}
 	q.confirm(q.peek(1, time.Hour))
@@ -119,7 +150,7 @@ func TestEvictedIPGetsNewObservationIdentityWithoutLosingCounts(t *testing.T) {
 	defer d.Close()
 	var samples []observation.Sample
 	for _, p := range pending {
-		samples = append(samples, p.sample)
+		samples = append(samples, *p.sample)
 	}
 	if e = d.Merge(context.Background(), samples, nil); e != nil {
 		t.Fatal(e)
@@ -181,7 +212,7 @@ func TestCollectorEvidenceProducesReplicatedScore100(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer d.Close()
-	if e = d.Merge(context.Background(), []observation.Sample{pending[0].sample}, nil); e != nil {
+	if e = d.Merge(context.Background(), []observation.Sample{*pending[0].sample}, nil); e != nil {
 		t.Fatal(e)
 	}
 	row, e := d.Show(context.Background(), p.Source.String())

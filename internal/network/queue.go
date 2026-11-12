@@ -11,8 +11,8 @@ import (
 )
 
 type pending struct {
-	sample   observation.Sample
-	raw      []byte
+	sample   *observation.Sample
+	size     int
 	revision uint64
 	ack      *atomic.Int64
 }
@@ -30,24 +30,27 @@ type memoryQueue struct {
 func newQueue(limit int) *memoryQueue {
 	return &memoryQueue{items: map[string]*list.Element{}, order: list.New(), limit: limit, notify: make(chan struct{}, 1)}
 }
-func (q *memoryQueue) put(s observation.Sample, ack *atomic.Int64) bool {
+
+// put returns the immutable copy shared by the queue and the local IP profile.
+// The profile can use the copy even when the queue is full.
+func (q *memoryQueue) put(s observation.Sample, ack *atomic.Int64) (*observation.Sample, bool) {
 	s.Ports = append([]uint16(nil), s.Ports...)
 	s.Details = s.Details.Clone()
 	raw, _ := json.Marshal(s)
+	size := len(raw) + 256
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	size := len(raw) + 256
 	old := q.items[s.ID]
 	previous := 0
 	if old != nil {
-		previous = len(old.Value.(pending).raw) + 256
+		previous = old.Value.(pending).size
 	}
 	if q.bytes-previous+size > q.limit {
 		q.rejected.Add(1)
-		return false
+		return &s, false
 	}
 	q.next++
-	item := pending{s, raw, q.next, ack}
+	item := pending{&s, size, q.next, ack}
 	if old != nil {
 		old.Value = item
 	} else {
@@ -58,7 +61,7 @@ func (q *memoryQueue) put(s observation.Sample, ack *atomic.Int64) bool {
 	case q.notify <- struct{}{}:
 	default:
 	}
-	return true
+	return &s, true
 }
 func (q *memoryQueue) peek(n int, retention time.Duration) []pending {
 	q.mu.Lock()
@@ -69,7 +72,7 @@ func (q *memoryQueue) peek(n int, retention time.Duration) []pending {
 		p := at.Value.(pending)
 		if retention > 0 && p.sample.Window+60 <= time.Now().Add(-retention).Unix() {
 			delete(q.items, p.sample.ID)
-			q.bytes -= len(p.raw) + 256
+			q.bytes -= p.size
 			q.order.Remove(at)
 			q.discarded.Add(1)
 		} else {
@@ -100,7 +103,7 @@ func (q *memoryQueue) confirm(items []pending) {
 			continue
 		}
 		delete(q.items, p.sample.ID)
-		q.bytes -= len(current.raw) + 256
+		q.bytes -= current.size
 		q.order.Remove(at)
 	}
 }

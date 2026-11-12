@@ -65,10 +65,14 @@ func (f *flowTracker) put(k flowKey, class observation.Class, now time.Time) {
 	}
 	if len(f.index) >= f.limit {
 		e := f.order.Front()
-		delete(f.index, e.Value.(*trackedFlow).key)
-		f.order.Remove(e)
+		flow := e.Value.(*trackedFlow)
+		delete(f.index, flow.key)
+		*flow = trackedFlow{k, class, now}
+		f.index[k] = e
+		f.order.MoveToBack(e)
 		f.evictions++
 		f.uncertainUntil = now.Add(f.ttl)
+		return
 	}
 	f.index[k] = f.order.PushBack(&trackedFlow{k, class, now})
 }

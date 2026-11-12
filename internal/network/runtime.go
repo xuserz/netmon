@@ -25,13 +25,6 @@ import (
 
 func RuntimeBase(c config.Config) string { return filepath.Join(c.Network.RuntimeDirectory, "monitor") }
 
-type report struct {
-	rows        map[string][]observation.IP
-	local       map[string][]observation.IP
-	totals      map[string]observation.Totals
-	localTotals observation.Totals
-	at          time.Time
-}
 type Runtime struct {
 	cfg                       config.Config
 	disk                      *disk
@@ -43,7 +36,6 @@ type Runtime struct {
 	wg                        sync.WaitGroup
 	healthMu                  sync.Mutex
 	health                    live.Health
-	report                    atomic.Pointer[report]
 	acks, malformed, received atomic.Uint64
 	lastPacket                atomic.Int64
 }
@@ -89,7 +81,6 @@ func newRuntime(c config.Config) (*Runtime, error) {
 	r.collector.detailTargets = c.Network.DetailTargets
 	r.health.ClusterNode = node
 	r.health.ClusterEnabled = c.Cluster.Enabled
-	r.report.Store(&report{rows: map[string][]observation.IP{}, local: map[string][]observation.IP{}, totals: map[string]observation.Totals{}, at: time.Now()})
 	ok = true
 	return r, nil
 }
@@ -115,7 +106,7 @@ func (r *Runtime) start() {
 				if r.disk != nil {
 					samples := make([]observation.Sample, len(pending))
 					for i, p := range pending {
-						samples[i] = p.sample
+						samples[i] = *p.sample
 					}
 					e = r.disk.Merge(work, samples, nil)
 				} else {
@@ -187,7 +178,7 @@ func (r *Runtime) start() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
-			r.publish(ctx)
+			r.sampleHealth(ctx)
 			select {
 			case <-ctx.Done():
 				return
@@ -261,41 +252,8 @@ func cappedInterval(d time.Duration) time.Duration {
 	}
 	return d
 }
-func (r *Runtime) publish(parent context.Context) {
+func (r *Runtime) sampleHealth(parent context.Context) {
 	now := time.Now()
-	local, localTotals := r.collector.snapshot(now)
-	snapshot := &report{local: map[string][]observation.IP{}, rows: map[string][]observation.IP{}, localTotals: localTotals, totals: map[string]observation.Totals{}, at: now}
-	for _, kind := range []string{"score", "total", "bytes", "syn"} {
-		copy := append([]observation.IP(nil), local...)
-		sortRows(copy, kind)
-		snapshot.local[kind] = copy
-	}
-	if r.disk != nil {
-		work, stop := context.WithTimeout(parent, 750*time.Millisecond)
-		success := true
-		for _, kind := range []string{"score", "total", "bytes", "syn"} {
-			rows, total, e := r.disk.View(work, kind, 1000)
-			if e != nil {
-				success = false
-				break
-			}
-			snapshot.rows[kind] = rows
-			snapshot.totals[kind] = total
-		}
-		stop()
-		if !success {
-			old := r.report.Load()
-			snapshot.rows = old.rows
-			snapshot.totals = old.totals
-			snapshot.at = old.at
-		}
-	} else {
-		snapshot.rows = snapshot.local
-		for _, kind := range []string{"score", "total", "bytes", "syn"} {
-			snapshot.totals[kind] = localTotals
-		}
-	}
-	r.report.Store(snapshot)
 	var usage unix.Rusage
 	unix.Getrusage(unix.RUSAGE_SELF, &usage)
 	var rss uint64
@@ -326,7 +284,7 @@ func (r *Runtime) publish(parent context.Context) {
 	r.health.Updated = now
 	r.health.CPUSeconds = float64(usage.Utime.Sec+usage.Stime.Sec) + float64(usage.Utime.Usec+usage.Stime.Usec)/1e6
 	r.health.RSSBytes = rss
-	r.health.Counted = uint64(max(int64(0), localTotals.Packets))
+	r.health.Counted = uint64(max(int64(0), r.collector.totalPackets.Load()))
 	r.health.Received = r.received.Load()
 	r.health.MalformedPackets = r.malformed.Load()
 	r.health.DeliveryAcks = r.acks.Load()
@@ -338,34 +296,20 @@ func (r *Runtime) publish(parent context.Context) {
 	}
 	r.healthMu.Unlock()
 }
-func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
-	value := r.report.Load()
+func (r *Runtime) Snapshot(ctx context.Context, req live.Request) live.Response {
+	now := time.Now()
 	kind := req.Sort
 	if kind == "" {
 		kind = "score"
 	}
-	rows := value.rows[kind]
-	total := value.totals[kind]
-	if req.Local {
-		rows = value.local[kind]
-		total = value.localTotals
-	}
-	if req.Op == "show" {
-		found := []observation.IP{}
-		for _, row := range rows {
-			if row.IP == req.IP {
-				found = append(found, row)
-				break
-			}
+	local := r.disk == nil || req.Local
+	response := live.Response{Network: true, Source: "live", Sort: kind, SnapshotAt: now, Cluster: r.cfg.Cluster.Enabled && !local, Partial: local}
+	if req.Op != "health" || req.Totals {
+		work, stop := context.WithTimeout(ctx, 750*time.Millisecond)
+		defer stop()
+		if e := r.readSnapshot(work, req, &response); e != nil {
+			return live.Response{Error: limitedError(e)}
 		}
-		rows = found
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if len(rows) > limit {
-		rows = rows[:limit]
 	}
 	r.healthMu.Lock()
 	health := r.health
@@ -379,7 +323,7 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 	health.QueueRejected = r.queue.rejected.Load()
 	health.DiscardedSamples = r.queue.discarded.Load()
 	peers := r.transport.list()
-	nodes, evictions := r.transport.presence.snapshot(peers, time.Now(), r.transport.contactTTL(), true)
+	nodes, evictions := r.transport.presence.snapshot(peers, now, r.transport.contactTTL(), true)
 	health.NodeCacheEvictions = evictions
 	health.ClusterPeers = len(nodes)
 	for _, node := range nodes {
@@ -392,11 +336,53 @@ func (r *Runtime) Snapshot(_ context.Context, req live.Request) live.Response {
 			health.ClusterLastSync = time.Unix(p.Success, 0)
 		}
 	}
-	var profile *observation.Profile
-	if req.Op == "show" && req.Local {
-		profile = r.collector.profile(req.IP)
+	response.UpdateOffer = r.transport.updates.snapshot()
+	response.NetworkNodes = nodes
+	response.Health = health
+	return response
+}
+
+func (r *Runtime) readSnapshot(ctx context.Context, req live.Request, response *live.Response) error {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
 	}
-	return live.Response{Profile: profile, UpdateOffer: r.transport.updates.snapshot(), Network: true, NetworkNodes: nodes, NetworkIPs: rows, NetworkTotals: total, Health: health, Source: "live", Sort: kind, SnapshotAt: value.at, Cluster: r.cfg.Cluster.Enabled && r.disk != nil && !req.Local, Partial: r.disk == nil || req.Local}
+	var e error
+	if !response.Partial {
+		if req.Op == "top" {
+			response.NetworkIPs, response.NetworkTotals, e = r.disk.View(ctx, response.Sort, limit)
+			return e
+		}
+		if req.Op == "show" {
+			row, e := r.disk.Show(ctx, req.IP)
+			if e == nil {
+				response.NetworkIPs = []observation.IP{row}
+			} else if !errors.Is(e, sql.ErrNoRows) {
+				return e
+			}
+		}
+		response.NetworkTotals, e = readTotals(ctx, r.disk.r.DB)
+		return e
+	}
+	if req.Op == "health" {
+		response.NetworkTotals = r.collector.totals(r.collector.count.Load())
+		return nil
+	}
+	rows, totals := r.collector.snapshot(response.SnapshotAt)
+	response.NetworkTotals = totals
+	if req.Op == "show" {
+		for _, row := range rows {
+			if row.IP == req.IP {
+				response.NetworkIPs = []observation.IP{row}
+				response.Profile = r.collector.profile(req.IP)
+				break
+			}
+		}
+		return nil
+	}
+	sortRows(rows, response.Sort)
+	response.NetworkIPs = rows[:min(len(rows), limit)]
+	return nil
 }
 func (r *Runtime) close() {
 	if r.cancel != nil {

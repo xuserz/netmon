@@ -72,7 +72,9 @@ func interactiveTop(out io.Writer, db string, limit int, interval time.Duration,
 	defer stop()
 	_, noColorEnv := os.LookupEnv("NO_COLOR")
 	fetch := &topFetcher{db: db, limit: limit, storedDB: readDB, localOnly: localOnly, cluster: cluster}
-	return ui.Run(ctx, ui.Options{In: os.Stdin, Out: file, Interval: interval, Version: version, Sort: sort, Color: !noColor && !noColorEnv}, fetch.Fetch)
+	return ui.Run(ctx, ui.Options{In: os.Stdin, Out: file, Interval: interval, Version: version, Sort: sort, Color: !noColor && !noColorEnv}, func(ctx context.Context, sort string, _ bool) (live.Response, error) {
+		return fetch.Fetch(ctx, sort)
+	})
 }
 func terminalOutput(out io.Writer) bool {
 	f, ok := out.(*os.File)

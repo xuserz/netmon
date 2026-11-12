@@ -96,6 +96,27 @@ func TestFlowDirectionWarmupExpiryBoundsAndServerResponses(t *testing.T) {
 		t.Fatal("echo reply unmatched", c)
 	}
 }
+
+func TestFlowEvictionKeepsRecencyAndClearsReusedState(t *testing.T) {
+	now := time.Unix(1000, 0)
+	f := newFlowTracker(2, time.Minute)
+	a := flowKey{sport: 1}
+	b := flowKey{sport: 2}
+	c := flowKey{sport: 3}
+	f.put(a, observation.Inbound, now)
+	f.put(b, observation.Reply, now)
+	f.get(a, now.Add(time.Second))
+	f.put(c, observation.Unknown, now.Add(2*time.Second))
+	if _, ok := f.get(b, now); ok || f.evictions != 1 || len(f.index) != 2 {
+		t.Fatal("least recently used flow survived eviction")
+	}
+	if class, ok := f.get(c, now.Add(time.Minute+time.Second)); !ok || class != observation.Unknown {
+		t.Fatal("replacement inherited the evicted class or timestamp", class, ok)
+	}
+	if _, ok := f.get(a, now.Add(time.Minute+2*time.Second)); ok {
+		t.Fatal("unrelated flow did not expire")
+	}
+}
 func TestDetailedCodecQueueSnapshotAndOverflowKeepExactTotals(t *testing.T) {
 	s := detailedSample(observation.ID(), time.Now().Unix()/600*600-1200, 1000)
 	if e := s.Validate(time.Now(), 0); e != nil {
@@ -115,7 +136,7 @@ func TestDetailedCodecQueueSnapshotAndOverflowKeepExactTotals(t *testing.T) {
 		}
 	}
 	q := newQueue(1 << 20)
-	if !q.put(s, nil) {
+	if _, ok := q.put(s, nil); !ok {
 		t.Fatal("queue rejection")
 	}
 	s.Details.Targets[0].Packets++
@@ -129,6 +150,9 @@ func TestDetailedCodecQueueSnapshotAndOverflowKeepExactTotals(t *testing.T) {
 	}
 	c.flush()
 	item := c.queue.peek(1, 0)[0].sample
+	if c.slots[0].Load().detail.Load() != item {
+		t.Fatal("the queue and the live profile should share one immutable snapshot")
+	}
 	if e := item.Validate(time.Now(), 0); e != nil {
 		t.Fatal(e)
 	}
@@ -346,7 +370,7 @@ func TestDistributedIncidentReplicationReplayProfileAndCompact(t *testing.T) {
 		t.Fatal("restart changed incident evidence", e)
 	}
 	floor := window + 600
-	if e = a.mergePage(ctx, nil, nil, floor); e != nil {
+	if e = a.mergePage(ctx, nil, nil, floor, nil); e != nil {
 		t.Fatal(e)
 	}
 	if e = a.mergePage(ctx, page.Samples, nil, 0, page.Incidents); e != nil {
@@ -355,5 +379,69 @@ func TestDistributedIncidentReplicationReplayProfileAndCompact(t *testing.T) {
 	gone, e := a.Incidents(ctx, "", "", 0, 20)
 	if e != nil || len(gone) != 0 {
 		t.Fatal("cleanup resurrected incident", gone, e)
+	}
+}
+
+func TestAnalysisCommitsWindowAndCursorTogether(t *testing.T) {
+	ctx := context.Background()
+	c := configForTest(t)
+	d, err := openDisk(c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d.Close() }()
+	window := time.Now().Unix()/600*600 - 600
+	first := detailedSample(observation.ID(), window, 1000)
+	second := detailedSample(observation.ID(), window, 1004)
+	first.Details = nil
+	first.Ports = []uint16{1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007}
+	first.Packets, first.TCP, first.SYN, first.Bytes = 400, 400, 400, 25600
+	first.Evidence = observation.Evidence{At: first.Last, PPS: 400, SYN: 400, Ports: 8}
+	if err := d.Merge(ctx, []observation.Sample{first, second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.w.DB.Exec(`CREATE TRIGGER fail_analysis BEFORE UPDATE ON net_analysis
+		BEGIN SELECT RAISE(ABORT,'simulated interrupted cursor write'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Analyze(ctx, 128); err == nil || !strings.Contains(err.Error(), "simulated interrupted cursor write") {
+		t.Fatal(err)
+	}
+	var sequence, cursor int64
+	if err := d.r.DB.QueryRow(`SELECT sequence, (SELECT sequence FROM net_analysis WHERE id=1) FROM net_meta WHERE id=1`).Scan(&sequence, &cursor); err != nil || sequence != 2 || cursor != 0 {
+		t.Fatal(sequence, cursor, err)
+	}
+	if events, err := d.Incidents(ctx, first.IP, "", 0, 20); err != nil || len(events) != 0 {
+		t.Fatal(events, err)
+	}
+	if row, err := d.Show(ctx, first.IP); err != nil || row.Correlation != nil || row.Packets != 408 {
+		t.Fatal(row, err)
+	}
+	if _, err := d.w.DB.Exec("DROP TRIGGER fail_analysis"); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	reopened, err := openDisk(c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = reopened
+	if n, err := d.Analyze(ctx, 128); err != nil || n != 2 {
+		t.Fatal(n, err)
+	}
+	events, err := d.Incidents(ctx, first.IP, "", 0, 20)
+	if err != nil || len(events) != 3 {
+		t.Fatal(events, err)
+	}
+	for _, event := range events {
+		if !event.Partial || len(event.Facts) != 2 || len(event.Ports) != 8 || event.SYN != 408 {
+			t.Fatal(event)
+		}
+	}
+	if n, err := d.Analyze(ctx, 128); err != nil || n != 0 {
+		t.Fatal(n, err)
+	}
+	if replayed, err := d.Incidents(ctx, first.IP, "", 0, 20); err != nil || !reflect.DeepEqual(events, replayed) {
+		t.Fatal(replayed, err)
 	}
 }

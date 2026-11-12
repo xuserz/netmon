@@ -110,19 +110,58 @@ func CombineFacts(a, b []Fact) ([]Fact, bool, error) {
 	return out, partial, nil
 }
 func BuildIncident(ip, kind string, bucket int64, facts []Fact, policy Policy) (Incident, bool, error) {
-	in := Incident{IP: ip, Kind: kind, Bucket: bucket, ID: IncidentID(ip, kind, bucket)}
-	if bucket < 0 || bucket%IncidentWindow != 0 || len(facts) > MaxFacts {
-		return in, false, fmt.Errorf("invalid incident bounds")
+	summary, err := summarizeIncident(ip, bucket, facts, policy)
+	if err != nil {
+		in := summary.base
+		in.Kind = kind
+		in.ID = IncidentID(ip, kind, bucket)
+		return in, false, err
 	}
+	return summary.build(kind, policy)
+}
+
+// BuildIncidents evaluates all local detection rules from one set of facts.
+// The results share read-only facts and ports.
+func BuildIncidents(ip string, bucket int64, facts []Fact, policy Policy) ([]Incident, error) {
+	summary, err := summarizeIncident(ip, bucket, facts, policy)
+	if err != nil {
+		return nil, err
+	}
+	var incidents []Incident
+	for _, kind := range [...]string{"port_scan", "distributed_scan", "flood"} {
+		in, eligible, err := summary.build(kind, policy)
+		if err != nil {
+			return nil, err
+		}
+		if eligible {
+			incidents = append(incidents, in)
+		}
+	}
+	return incidents, nil
+}
+
+type incidentSummary struct {
+	base        Incident
+	portCount   int
+	allNodes    int
+	pps, synPPS int64
+	localScan   bool
+}
+
+func summarizeIncident(ip string, bucket int64, facts []Fact, policy Policy) (incidentSummary, error) {
+	summary := incidentSummary{base: Incident{IP: ip, Bucket: bucket}}
+	if bucket < 0 || bucket%IncidentWindow != 0 || len(facts) > MaxFacts {
+		return summary, fmt.Errorf("invalid incident bounds")
+	}
+	in := &summary.base
 	seen := map[string]bool{}
-	nodes := map[string]bool{}
+	allNodes := map[string]bool{}
 	ports := map[uint16]bool{}
 	localPorts := map[string]map[uint16]bool{}
 	localSYN := map[string]int64{}
-	var pps, synPPS int64
 	for _, f := range facts {
 		if !ValidID(f.ID) || !ValidID(f.Node) || seen[f.ID] || len(f.Name) > 128 || InvalidName(f.Name) || f.Window%60 != 0 || f.Window < bucket || f.Window >= bucket+IncidentWindow || f.First < f.Window || f.Last < f.First || f.Last >= f.Window+60 || f.Packets < 0 || f.SYN < 0 || f.SYN > f.Packets || f.PPS < 0 || f.PPS > f.Packets || f.SynPPS < 0 || f.SynPPS > f.SYN || len(f.Ports) > MaxPorts {
-			return in, false, fmt.Errorf("invalid incident fact")
+			return summary, fmt.Errorf("invalid incident fact")
 		}
 		seen[f.ID] = true
 		if len(in.Facts) == 0 {
@@ -132,11 +171,13 @@ func BuildIncident(ip, kind string, bucket int64, facts []Fact, policy Policy) (
 		in.Last = max(in.Last, f.Last)
 		in.Packets = Add(in.Packets, f.Packets)
 		in.SYN = Add(in.SYN, f.SYN)
-		pps = max(pps, f.PPS)
-		synPPS = max(synPPS, f.SynPPS)
+		summary.pps = max(summary.pps, f.PPS)
+		summary.synPPS = max(summary.synPPS, f.SynPPS)
 		in.Partial = in.Partial || f.Partial
+		if f.Packets > 0 {
+			allNodes[f.Node] = true
+		}
 		if f.SYN > 0 {
-			nodes[f.Node] = true
 			localSYN[f.Node] = Add(localSYN[f.Node], f.SYN)
 			if localPorts[f.Node] == nil {
 				localPorts[f.Node] = map[uint16]bool{}
@@ -145,7 +186,7 @@ func BuildIncident(ip, kind string, bucket int64, facts []Fact, policy Policy) (
 		distinct := map[uint16]bool{}
 		for _, p := range f.Ports {
 			if p == 0 || distinct[p] || f.SYN == 0 {
-				return in, false, fmt.Errorf("invalid incident port evidence")
+				return summary, fmt.Errorf("invalid incident port evidence")
 			}
 			distinct[p] = true
 			ports[p] = true
@@ -153,17 +194,32 @@ func BuildIncident(ip, kind string, bucket int64, facts []Fact, policy Policy) (
 		}
 		in.Facts = append(in.Facts, f)
 	}
-	in.Nodes = len(nodes)
+	in.Nodes = len(localSYN)
+	summary.allNodes = len(allNodes)
+	for node, ports := range localPorts {
+		if len(ports) >= policy.Ports && localSYN[node] >= int64(len(ports)*2) {
+			summary.localScan = true
+			break
+		}
+	}
 	for p := range ports {
 		in.Ports = append(in.Ports, p)
 	}
 	sort.Slice(in.Ports, func(i, j int) bool { return in.Ports[i] < in.Ports[j] })
 	// Global distinct-port storage is capped while facts preserve their own sets.
-	count := len(in.Ports)
-	if count > MaxPorts {
+	summary.portCount = len(in.Ports)
+	if summary.portCount > MaxPorts {
 		in.Ports = in.Ports[:MaxPorts]
 		in.Partial = true
 	}
+	return summary, nil
+}
+
+func (summary incidentSummary) build(kind string, policy Policy) (Incident, bool, error) {
+	in := summary.base
+	in.Kind = kind
+	in.ID = IncidentID(in.IP, kind, in.Bucket)
+	count := summary.portCount
 	eligible := false
 	switch kind {
 	case "distributed_scan":
@@ -171,24 +227,14 @@ func BuildIncident(ip, kind string, bucket int64, facts []Fact, policy Policy) (
 		in.Score = min(90, 45+max(0, in.Nodes-2)*5+max(0, count-policy.Ports)*2)
 		in.Reason = fmt.Sprintf("observed TCP SYN to %d ports on %d nodes in a fixed 10-minute window", count, in.Nodes)
 	case "port_scan":
-		for n, p := range localPorts {
-			if len(p) >= policy.Ports && localSYN[n] >= int64(len(p)*2) {
-				eligible = true
-			}
-		}
+		eligible = summary.localScan
 		in.Score = min(80, 30+max(0, count-policy.Ports)*2)
 		in.Reason = fmt.Sprintf("observed repeated TCP SYN to %d ports, including a single-node port scan", count)
 	case "flood":
-		allNodes := map[string]bool{}
-		for _, f := range facts {
-			if f.Packets > 0 {
-				allNodes[f.Node] = true
-			}
-		}
-		in.Nodes = len(allNodes)
-		eligible = pps >= policy.PPS*4 || synPPS >= policy.SYN*4
-		in.Score, _ = policy.Base(Evidence{PPS: pps, SYN: synPPS})
-		in.Reason = fmt.Sprintf("observed eligible packet peak %d/s; SYN peak %d/s (retransmissions included)", pps, synPPS)
+		in.Nodes = summary.allNodes
+		eligible = summary.pps >= policy.PPS*4 || summary.synPPS >= policy.SYN*4
+		in.Score, _ = policy.Base(Evidence{PPS: summary.pps, SYN: summary.synPPS})
+		in.Reason = fmt.Sprintf("observed eligible packet peak %d/s; SYN peak %d/s (retransmissions included)", summary.pps, summary.synPPS)
 	default:
 		return in, false, fmt.Errorf("unknown incident kind")
 	}

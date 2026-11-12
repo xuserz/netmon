@@ -30,6 +30,14 @@ func Read(ctx context.Context, c config.Config, sort string, n int) ([]observati
 	e = NewLabeler(c).Annotate(rows)
 	return rows, total, e
 }
+func ReadTotals(ctx context.Context, c config.Config) (observation.Totals, error) {
+	s, e := openDisk(c, false)
+	if e != nil {
+		return observation.Totals{}, e
+	}
+	defer s.Close()
+	return readTotals(ctx, s.r.DB)
+}
 func ReadIP(ctx context.Context, c config.Config, ip string) (observation.IP, error) {
 	s, e := openDisk(c, false)
 	if e != nil {
@@ -112,7 +120,7 @@ func Export(ctx context.Context, c config.Config, path string) error {
 		return e
 	}
 	for rows.Next() {
-		row, _, err := scanIP(rows, s.policy, now)
+		row, err := scanIP(rows, s.policy, now)
 		if err != nil {
 			return err
 		}
@@ -190,7 +198,7 @@ func List(ctx context.Context, c config.Config, directory, kind string, visit fu
 		return totals, e
 	}
 	for rows.Next() {
-		row, _, err := scanIP(rows, s.policy, now)
+		row, err := scanIP(rows, s.policy, now)
 		if err != nil {
 			return totals, err
 		}

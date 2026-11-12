@@ -131,11 +131,12 @@ type Health struct {
 	Parser             packet.Counters `json:"parser"`
 }
 type Request struct {
-	IP    string `json:"ip,omitempty"`
-	Local bool   `json:"local,omitempty"`
-	Op    string `json:"op"`
-	Sort  string `json:"sort,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	IP     string `json:"ip,omitempty"`
+	Local  bool   `json:"local,omitempty"`
+	Op     string `json:"op"`
+	Sort   string `json:"sort,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Totals bool   `json:"totals,omitempty"` // Include network totals in a health response.
 }
 type Response struct {
 	Profile         *observation.Profile `json:"profile,omitempty"`

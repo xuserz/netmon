@@ -158,7 +158,10 @@ class TerminalTests(unittest.TestCase):
                 with conn:
                     conn.settimeout(.3)
                     try:
-                        conn.recv(4096)
+                        with conn.makefile("rb") as stream:
+                            request = stream.readline(4096)
+                        if not request:
+                            continue
                         if slow:
                             stopped.wait(3)
                             continue
@@ -183,7 +186,10 @@ class TerminalTests(unittest.TestCase):
                         if network and network_rows is not None:
                             response["network_ips"] = network_rows
                         if network and network_nodes is not None:
-                            response["network_nodes"] = network_nodes
+                            req = json.loads(request)
+                            if req["op"] == "health" and req.get("totals"):
+                                response["network_nodes"] = network_nodes
+                                response.pop("network_ips")
                             response["health"].update(cluster_enabled=True, cluster_online=sum(n.get("online", False) for n in network_nodes), cluster_peers=len(network_nodes))
                         conn.sendall(json.dumps(response).encode() + b"\n")
                     except OSError:

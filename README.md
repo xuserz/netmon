@@ -131,6 +131,8 @@ In the dashboard: arrows or `j/k` scroll, PageUp/PageDown navigate, Space pauses
 between IP activity and node connections. `NO_COLOR` is
 supported. Full-node views show committed shared data and can lag behind capture;
 `--local` and forward-node views show a bounded sample of current-process activity.
+In network mode, each IP view refresh requests only its selected ranking. The
+node view and `netmon stats` read totals without ranking IPs.
 
 Network dashboards show how many known remote nodes are online. The node view
 includes full/forward roles, names, addresses, incoming/outgoing links, last

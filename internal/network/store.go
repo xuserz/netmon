@@ -35,7 +35,8 @@ func Policy(c config.Config) observation.Policy {
 type disk struct {
 	journal     bool
 	w, r        *store.Store
-	mu          sync.Mutex
+	mu          sync.Mutex // Serializes writes, including use of the incident encoder.
+	encoder     incidentEncoder
 	node, epoch string
 	retention   time.Duration
 	policy      observation.Policy
@@ -160,11 +161,6 @@ func (s *disk) Close() {
 	}
 	s.w.Close()
 }
-func parseEvidence(raw []byte) (observation.Evidence, error) {
-	var e observation.Evidence
-	err := json.Unmarshal(raw, &e)
-	return e, err
-}
 func unionPorts(a, b []uint16) []uint16 {
 	out := append(append(make([]uint16, 0, len(a)+len(b)), a...), b...)
 	slices.Sort(out)
@@ -196,13 +192,12 @@ func mergeSample(old, next observation.Sample, p observation.Policy) (observatio
 	return next, nil
 }
 func (s *disk) Merge(ctx context.Context, items []observation.Sample, peer *Peer) error {
-	return s.mergePage(ctx, items, peer, 0)
+	return s.mergeBatch(ctx, items, peer, 0, nil, 0)
 }
-func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, incidentPages ...[]observation.Incident) error {
-	var incidents []observation.Incident
-	for _, page := range incidentPages {
-		incidents = append(incidents, page...)
-	}
+func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, incidents []observation.Incident) error {
+	return s.mergeBatch(ctx, items, peer, floor, incidents, 0)
+}
+func (s *disk) mergeBatch(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, incidents []observation.Incident, analysisCursor int64) error {
 	if len(items)+len(incidents) > 128 {
 		return errors.New("network page exceeds 128 records")
 	}
@@ -244,7 +239,7 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 
 	for {
 		var changed bool
-		e := s.mergeOnce(ctx, items, peer, floor, &changed, incidents)
+		e := s.mergeOnce(ctx, items, peer, floor, &changed, incidents, analysisCursor)
 		if e == nil {
 			// Reserve space after a committed change; stale/no-op replay must never
 			// trigger new eviction simply because this replica is near capacity.
@@ -294,7 +289,7 @@ func (s *disk) mergePage(ctx context.Context, items []observation.Sample, peer *
 		}
 	}
 }
-func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, changed *bool, incidentPages ...[]observation.Incident) error {
+func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *Peer, floor int64, changed *bool, incidents []observation.Incident, analysisCursor int64) error {
 	if len(items) > 128 {
 		return errors.New("network page exceeds 128 observations")
 	}
@@ -333,24 +328,28 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 	} else {
 		floor = storedFloor
 	}
-	totals, e := readTotals(ctx, tx)
-	if e != nil {
-		return e
-	}
-	queries := []string{
-		"SELECT " + sampleColumns + " FROM net_observations WHERE id=?",
-		`INSERT INTO net_observations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,priority=excluded.priority,payload=excluded.payload`,
-		"SELECT ip,packets,bytes,tcp,syn,udp,icmp,first,last,peak,evidence,partial FROM net_ips WHERE ip=?",
-		`INSERT INTO net_ips VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET packets=excluded.packets,bytes=excluded.bytes,tcp=excluded.tcp,syn=excluded.syn,udp=excluded.udp,icmp=excluded.icmp,first=excluded.first,last=excluded.last,peak=excluded.peak,evidence=excluded.evidence,priority=excluded.priority,partial=excluded.partial`,
-	}
-	stmts := make([]*sql.Stmt, len(queries))
-	for i, q := range queries {
-		stmt, err := tx.PrepareContext(ctx, q)
-		if err != nil {
-			return err
+	var totals, originalTotals observation.Totals
+	var stmts [4]*sql.Stmt
+	if len(items) != 0 {
+		totals, e = readTotals(ctx, tx)
+		if e != nil {
+			return e
 		}
-		stmts[i] = stmt
-		defer stmt.Close()
+		originalTotals = totals
+		queries := [...]string{
+			"SELECT " + sampleColumns + " FROM net_observations WHERE id=?",
+			`INSERT INTO net_observations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,priority=excluded.priority,payload=excluded.payload`,
+			"SELECT " + ipColumns + " FROM net_ips WHERE ip=?",
+			`INSERT INTO net_ips VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET packets=excluded.packets,bytes=excluded.bytes,tcp=excluded.tcp,syn=excluded.syn,udp=excluded.udp,icmp=excluded.icmp,first=excluded.first,last=excluded.last,peak=excluded.peak,evidence=excluded.evidence,priority=excluded.priority,partial=excluded.partial`,
+		}
+		for i, q := range queries {
+			stmt, err := tx.PrepareContext(ctx, q)
+			if err != nil {
+				return err
+			}
+			stmts[i] = stmt
+			defer stmt.Close()
+		}
 	}
 	for _, item := range items {
 		if item.Window < floor {
@@ -372,7 +371,7 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 		if old.ID != "" && bytes.Equal(encodeSample(old), encoded) {
 			continue
 		}
-		row, evidence, e := scanIP(stmts[2].QueryRowContext(ctx, item.IP), s.policy, now)
+		row, evidence, e := scanIPState(stmts[2].QueryRowContext(ctx, item.IP))
 		absent := errors.Is(e, sql.ErrNoRows)
 		if e != nil && !absent {
 			return e
@@ -418,18 +417,37 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 			return e
 		}
 	}
-	for _, page := range incidentPages {
-		for _, v := range page {
-			if e := writeIncident(ctx, tx, v, s.policy, &seq, incidentFloor(s.retention, floor)); e != nil {
+	if len(incidents) != 0 {
+		updatedIPs := make(map[string]struct{}, len(incidents))
+		for _, v := range incidents {
+			previous := seq
+			if e := s.writeIncident(ctx, tx, v, &seq, incidentFloor(s.retention, floor)); e != nil {
+				return e
+			}
+			if seq != previous {
+				updatedIPs[v.IP] = struct{}{}
+			}
+		}
+		for ip := range updatedIPs {
+			if e := refreshCorrelation(ctx, tx, ip, s.policy); e != nil {
 				return e
 			}
 		}
 	}
-	if e = writeTotals(ctx, tx, totals); e != nil {
-		return e
+	if totals != originalTotals {
+		if e = writeTotals(ctx, tx, totals); e != nil {
+			return e
+		}
 	}
-	if _, e = tx.ExecContext(ctx, "UPDATE net_meta SET sequence=? WHERE id=1", seq); e != nil {
-		return e
+	if seq != originalSequence {
+		if _, e = tx.ExecContext(ctx, "UPDATE net_meta SET sequence=? WHERE id=1", seq); e != nil {
+			return e
+		}
+	}
+	if analysisCursor > 0 {
+		if _, e = tx.ExecContext(ctx, advanceAnalysisSQL, analysisCursor); e != nil {
+			return e
+		}
 	}
 	if peer != nil {
 		if _, e = tx.ExecContext(ctx, `INSERT INTO net_peers(url,node,name,epoch,cursor,success,error) VALUES(?,?,?,?,?,?, '') ON CONFLICT(url) DO UPDATE SET node=excluded.node,name=excluded.name,epoch=excluded.epoch,cursor=excluded.cursor,success=excluded.success,error=''`, peer.URL, peer.Node, peer.Name, peer.Epoch, peer.Cursor, now.Unix()); e != nil {
@@ -445,36 +463,40 @@ func (s *disk) mergeOnce(ctx context.Context, items []observation.Sample, peer *
 
 const ipColumns = "ip,packets,bytes,tcp,syn,udp,icmp,first,last,peak,evidence,partial"
 
-func scanIP(row interface{ Scan(...any) error }, policy observation.Policy, now time.Time) (observation.IP, observation.Evidence, error) {
+func scanIPState(row interface{ Scan(...any) error }) (observation.IP, observation.Evidence, error) {
 	var ip observation.IP
 	var raw []byte
 	e := row.Scan(&ip.IP, &ip.Packets, &ip.Bytes, &ip.TCP, &ip.SYN, &ip.UDP, &ip.ICMP, &ip.First, &ip.Last, &ip.PeakPPS, &raw, &ip.Partial)
 	if e != nil {
 		return ip, observation.Evidence{}, e
 	}
-	evidence, e := parseEvidence(raw)
-	if e != nil {
-		return ip, evidence, e
-	}
 	var state ipState
 	if e := json.Unmarshal(raw, &state); e != nil {
-		return ip, evidence, e
+		return ip, observation.Evidence{}, e
 	}
 	if state.Traffic != nil {
 		ip.Traffic = *state.Traffic
 	} else {
 		ip.Traffic = observation.Traffic{Unknown: ip.Packets}
 	}
+	ip.Correlation = state.Correlation
+	return ip, state.Evidence, nil
+}
+
+func scanIP(row interface{ Scan(...any) error }, policy observation.Policy, now time.Time) (observation.IP, error) {
+	ip, evidence, e := scanIPState(row)
+	if e != nil {
+		return ip, e
+	}
 	ip.Score, ip.Reasons = policy.Score(evidence, now)
 	ip.IntensityScore = ip.Score
-	ip.Correlation = state.Correlation
 	ip.EvidenceAt = evidence.At
 	if correlated := ip.Correlation.Decay(policy, now); correlated > ip.Score {
 		ip.Score = correlated
 		ip.EvidenceAt = ip.Correlation.At
 		ip.Reasons = append(ip.Reasons, ip.Correlation.Reason+"; incident "+ip.Correlation.ID)
 	}
-	return ip, evidence, nil
+	return ip, nil
 }
 func rank(sort string) (string, error) {
 	switch sort {
@@ -513,7 +535,7 @@ func (s *disk) View(ctx context.Context, sort string, limit int) ([]observation.
 	defer rows.Close()
 	var result []observation.IP
 	for rows.Next() {
-		row, _, err := scanIP(rows, s.policy, time.Now())
+		row, err := scanIP(rows, s.policy, time.Now())
 		if err != nil {
 			return nil, totals, err
 		}
@@ -526,8 +548,7 @@ func (s *disk) Show(ctx context.Context, ip string) (observation.IP, error) {
 	if e != nil {
 		return observation.IP{}, e
 	}
-	row, _, e := scanIP(s.r.DB.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", addr.Unmap().String()), s.policy, time.Now())
-	return row, e
+	return scanIP(s.r.DB.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", addr.Unmap().String()), s.policy, time.Now())
 }
 func (s *disk) Page(ctx context.Context, epoch string, after int64) (Page, error) {
 	page := Page{Epoch: s.epoch}
@@ -750,7 +771,7 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 		}
 	}
 	for ip, removed := range expired {
-		row, _, err := scanIP(tx.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", ip), s.policy, time.Now())
+		row, _, err := scanIPState(tx.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", ip))
 		if err != nil {
 			return 0, err
 		}
@@ -785,9 +806,11 @@ func (s *disk) pruneLocked(ctx context.Context, capacity bool) (int, error) {
 	}
 	return len(ids) + removedEvents, tx.Commit()
 }
-func readTotals(ctx context.Context, tx *sql.Tx) (observation.Totals, error) {
+func readTotals(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (observation.Totals, error) {
 	var t observation.Totals
-	e := tx.QueryRowContext(ctx, "SELECT ips,packets,bytes,tcp,syn,udp,icmp FROM net_totals WHERE id=1").Scan(&t.IPs, &t.Packets, &t.Bytes, &t.TCP, &t.SYN, &t.UDP, &t.ICMP)
+	e := db.QueryRowContext(ctx, "SELECT ips,packets,bytes,tcp,syn,udp,icmp FROM net_totals WHERE id=1").Scan(&t.IPs, &t.Packets, &t.Bytes, &t.TCP, &t.SYN, &t.UDP, &t.ICMP)
 	return t, e
 }
 func writeTotals(ctx context.Context, tx *sql.Tx, t observation.Totals) error {

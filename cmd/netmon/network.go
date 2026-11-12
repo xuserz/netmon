@@ -21,18 +21,26 @@ import (
 	"netmon/internal/ui"
 )
 
-func networkFetch(ctx context.Context, c config.Config, kind string, n int, local bool, labels *network.Labeler) (live.Response, error) {
-	if r, e := live.Fetch(ctx, network.RuntimeBase(c), live.Request{Op: "top", Sort: kind, Limit: n, Local: local}); e == nil && r.Network {
-		r.NetworkIPs = append([]observation.IP(nil), r.NetworkIPs...)
-		if e := labels.Annotate(r.NetworkIPs); e != nil {
-			return live.Response{}, e
+func networkFetch(ctx context.Context, c config.Config, req live.Request, labels *network.Labeler) (live.Response, error) {
+	if r, e := live.Fetch(ctx, network.RuntimeBase(c), req); e == nil && r.Network {
+		if req.Op == "top" {
+			if e := labels.Annotate(r.NetworkIPs); e != nil {
+				return live.Response{}, e
+			}
 		}
 		return r, nil
 	}
-	if c.Storage.Mode == "forward" || local {
+	if c.Storage.Mode == "forward" || req.Local {
 		return live.Response{}, errors.New("forward/local RAM statistics require a running network monitor; inspect a storage node for history")
 	}
-	rows, totals, e := network.Read(ctx, c, kind, n)
+	var rows []observation.IP
+	var totals observation.Totals
+	var e error
+	if req.Op == "top" {
+		rows, totals, e = network.Read(ctx, c, req.Sort, req.Limit)
+	} else {
+		totals, e = network.ReadTotals(ctx, c)
+	}
 	if e != nil {
 		return live.Response{}, e
 	}
@@ -312,6 +320,13 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 	if *interval < 250*time.Millisecond || *interval > time.Minute {
 		return errors.New("--interval must be 250ms..1m")
 	}
+	fetch := func(ctx context.Context, sort string, totalsOnly bool) (live.Response, error) {
+		req := live.Request{Op: "top", Sort: sort, Limit: *n, Local: *local}
+		if totalsOnly {
+			req = live.Request{Op: "health", Local: *local, Totals: true}
+		}
+		return networkFetch(ctx, c, req, labels)
+	}
 	if (command == "top" || command == "nodes") && !*once && (*watch || terminalOutput(out)) {
 		file, ok := out.(*os.File)
 		if !ok {
@@ -320,11 +335,9 @@ func networkCommand(command string, args []string, c config.Config, out, errOut 
 		background, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		_, envNoColor := os.LookupEnv("NO_COLOR")
-		return ui.Run(background, ui.Options{Network: true, Nodes: command == "nodes" || *showNodes, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, func(ctx context.Context, sort string) (live.Response, error) {
-			return networkFetch(ctx, c, sort, *n, *local, labels)
-		})
+		return ui.Run(background, ui.Options{Network: true, Nodes: command == "nodes" || *showNodes, In: os.Stdin, Out: file, Interval: *interval, Version: version, Sort: *sort, Color: !*noColor && !envNoColor}, fetch)
 	}
-	r, e := networkFetch(ctx, c, *sort, *n, *local, labels)
+	r, e := fetch(ctx, *sort, command == "stats" || *showNodes)
 	if e != nil {
 		return e
 	}

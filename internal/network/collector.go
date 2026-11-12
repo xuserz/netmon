@@ -66,11 +66,9 @@ func (c *collector) emit(e *entry, final bool) {
 	if e.sample.Packets == 0 || !e.dirty {
 		return
 	}
-	snapshot := e.sample
-	snapshot.Details = e.sample.Details.Clone()
-	snapshot.Ports = append([]uint16(nil), e.sample.Ports...)
-	e.detail.Store(&snapshot)
-	if c.queue.put(e.sample, e.ack) {
+	snapshot, queued := c.queue.put(e.sample, e.ack)
+	e.detail.Store(snapshot)
+	if queued {
 		e.dirty = false
 	} else if final {
 		c.queue.discarded.Add(1)
@@ -256,8 +254,13 @@ func (c *collector) snapshot(now time.Time) ([]observation.IP, observation.Total
 			break
 		}
 	}
-	totals := observation.Totals{IPs: int64(len(result)), Counters: observation.Counters{Packets: c.totalPackets.Load(), Bytes: c.totalBytes.Load(), TCP: c.totalTCP.Load(), SYN: c.totalSYN.Load(), UDP: c.totalUDP.Load(), ICMP: c.totalICMP.Load()}}
-	return result, totals
+	return result, c.totals(int64(len(result)))
+}
+func (c *collector) totals(ips int64) observation.Totals {
+	return observation.Totals{IPs: ips, Counters: observation.Counters{
+		Packets: c.totalPackets.Load(), Bytes: c.totalBytes.Load(), TCP: c.totalTCP.Load(),
+		SYN: c.totalSYN.Load(), UDP: c.totalUDP.Load(), ICMP: c.totalICMP.Load(),
+	}}
 }
 func sortRows(rows []observation.IP, kind string) {
 	sort.Slice(rows, func(i, j int) bool {

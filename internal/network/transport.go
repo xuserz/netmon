@@ -246,7 +246,7 @@ func (t *transport) send(ctx context.Context, items []pending) error {
 	var last error = errors.New("no storage peer reachable")
 	m := t.envelope()
 	for _, p := range items {
-		m.Samples = append(m.Samples, p.sample)
+		m.Samples = append(m.Samples, *p.sample)
 	}
 	for _, p := range peers {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

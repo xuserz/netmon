@@ -16,16 +16,26 @@ import (
 	"netmon/internal/observation"
 )
 
-func encodeIncident(v observation.Incident) ([]byte, error) {
-	var b bytes.Buffer
-	g := gzip.NewWriter(&b)
-	if e := json.NewEncoder(g).Encode(v); e != nil {
+type incidentEncoder struct {
+	writer *gzip.Writer
+	output bytes.Buffer
+}
+
+func (encoder *incidentEncoder) encode(canonical []byte) ([]byte, error) {
+	if encoder.writer == nil {
+		encoder.writer = gzip.NewWriter(&encoder.output)
+	} else {
+		encoder.writer.Reset(&encoder.output)
+	}
+	// Detach the returned bytes from the encoder before the next incident.
+	defer func() { encoder.output = bytes.Buffer{} }()
+	if _, e := encoder.writer.Write(append(canonical, '\n')); e != nil {
 		return nil, e
 	}
-	if e := g.Close(); e != nil {
+	if e := encoder.writer.Close(); e != nil {
 		return nil, e
 	}
-	return b.Bytes(), nil
+	return encoder.output.Bytes(), nil
 }
 func decodeIncident(raw []byte) (observation.Incident, error) {
 	var v observation.Incident
@@ -79,7 +89,7 @@ func incidentFloor(retention time.Duration, floor int64) int64 {
 	}
 	return floor
 }
-func writeIncident(ctx context.Context, tx *sql.Tx, v observation.Incident, p observation.Policy, seq *int64, floor int64) error {
+func (s *disk) writeIncident(ctx context.Context, tx *sql.Tx, v observation.Incident, seq *int64, floor int64) error {
 	if v.Last < floor {
 		return nil
 	}
@@ -101,7 +111,7 @@ func writeIncident(ctx context.Context, tx *sql.Tx, v observation.Incident, p ob
 		v.Facts = facts
 		v.Partial = v.Partial || old.Partial || partial
 	}
-	next, e := normalizeIncident(v, p)
+	next, e := normalizeIncident(v, s.policy)
 	if e != nil {
 		return e
 	}
@@ -112,19 +122,13 @@ func writeIncident(ctx context.Context, tx *sql.Tx, v observation.Incident, p ob
 	if bytes.Equal(oldCanonical, canonical) {
 		return nil
 	}
-	raw, e := encodeIncident(next)
+	raw, e := s.encoder.encode(canonical)
 	if e != nil {
 		return e
-	}
-	if bytes.Equal(oldRaw, raw) {
-		return nil
 	}
 	*seq++
-	_, e = tx.ExecContext(ctx, `INSERT INTO net_incidents VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last=excluded.last,version=excluded.version,priority=excluded.priority,payload=excluded.payload`, next.ID, next.IP, next.Kind, next.Bucket, next.Last, *seq, (&observation.Correlation{Score: next.Score, At: next.Last}).Priority(p), raw)
-	if e != nil {
-		return e
-	}
-	return refreshCorrelation(ctx, tx, next.IP, p)
+	_, e = tx.ExecContext(ctx, `INSERT INTO net_incidents VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last=excluded.last,version=excluded.version,priority=excluded.priority,payload=excluded.payload`, next.ID, next.IP, next.Kind, next.Bucket, next.Last, *seq, (&observation.Correlation{Score: next.Score, At: next.Last}).Priority(s.policy), raw)
+	return e
 }
 func loadCorrelation(ctx context.Context, tx *sql.Tx, ip string) (*observation.Correlation, error) {
 	var raw []byte
@@ -142,7 +146,7 @@ func loadCorrelation(ctx context.Context, tx *sql.Tx, ip string) (*observation.C
 	return &observation.Correlation{ID: v.ID, Score: v.Score, At: v.Last, Reason: v.Reason}, nil
 }
 func refreshCorrelation(ctx context.Context, tx *sql.Tx, ip string, p observation.Policy) error {
-	row, evidence, e := scanIP(tx.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", ip), p, time.Now())
+	row, evidence, e := scanIPState(tx.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM net_ips WHERE ip=?", ip))
 	if errors.Is(e, sql.ErrNoRows) {
 		return nil
 	}
@@ -157,9 +161,17 @@ func refreshCorrelation(ctx context.Context, tx *sql.Tx, ip string, p observatio
 	return e
 }
 
-// Analyze incrementally follows committed observation versions. It runs on a
-// full node outside capture; advancing the cursor only after durable journal
-// writes makes replay after a crash harmless.
+const advanceAnalysisSQL = "UPDATE net_analysis SET sequence=?1 WHERE id=1 AND sequence<?1"
+
+func (s *disk) advanceAnalysis(ctx context.Context, cursor int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.w.DB.ExecContext(ctx, advanceAnalysisSQL, cursor)
+	return err
+}
+
+// Analyze follows committed observation versions outside capture. Each window's
+// journal entries and analysis cursor commit together.
 func (s *disk) Analyze(ctx context.Context, limit int) (int, error) {
 	if !s.journal {
 		return 0, nil
@@ -168,11 +180,11 @@ func (s *disk) Analyze(ctx context.Context, limit int) (int, error) {
 		return 0, errors.New("analysis batch must be 1..128")
 	}
 	var after, head int64
-	if e := s.r.DB.QueryRowContext(ctx, "SELECT sequence FROM net_analysis WHERE id=1").Scan(&after); e != nil {
+	if e := s.r.DB.QueryRowContext(ctx, "SELECT a.sequence,m.sequence FROM net_analysis a JOIN net_meta m ON a.id=m.id WHERE a.id=1").Scan(&after, &head); e != nil {
 		return 0, e
 	}
-	if e := s.r.DB.QueryRowContext(ctx, "SELECT sequence FROM net_meta WHERE id=1").Scan(&head); e != nil {
-		return 0, e
+	if after >= head {
+		return 0, nil
 	}
 	rows, e := s.r.DB.QueryContext(ctx, "SELECT "+sampleColumns+",version FROM net_observations WHERE version>? AND version<=? ORDER BY version LIMIT ?", after, head, limit)
 	if e != nil {
@@ -222,35 +234,36 @@ func (s *disk) Analyze(ctx context.Context, limit int) (int, error) {
 	if count < limit {
 		cursor = head
 	}
-	for _, w := range windows {
+	if len(windows) == 0 {
+		if e := s.advanceAnalysis(ctx, cursor); e != nil {
+			return 0, e
+		}
+		return count, nil
+	}
+	for i, w := range windows {
 		facts, partial, e := s.windowFacts(ctx, w.ip, w.bucket)
 		if e != nil {
 			return 0, e
 		}
-		for _, kind := range []string{"port_scan", "distributed_scan", "flood"} {
-			v, eligible, e := observation.BuildIncident(w.ip, kind, w.bucket, facts, s.policy)
-			if e != nil {
-				return 0, e
-			}
-			if !eligible {
-				continue
-			}
-			v.Partial = v.Partial || partial
-			if e = s.mergePage(ctx, nil, nil, 0, []observation.Incident{v}); e != nil {
-				return 0, e
-			}
-		}
-		s.mu.Lock()
-		_, e = s.w.DB.ExecContext(ctx, "UPDATE net_analysis SET sequence=max(sequence,?) WHERE id=1", w.version)
-		s.mu.Unlock()
+		incidents, e := observation.BuildIncidents(w.ip, w.bucket, facts, s.policy)
 		if e != nil {
 			return 0, e
 		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, e = s.w.DB.ExecContext(ctx, "UPDATE net_analysis SET sequence=max(sequence,?) WHERE id=1", cursor); e != nil {
-		return 0, e
+		for j := range incidents {
+			incidents[j].Partial = incidents[j].Partial || partial
+		}
+		checkpoint := w.version
+		if i == len(windows)-1 {
+			checkpoint = cursor
+		}
+		if len(incidents) == 0 {
+			e = s.advanceAnalysis(ctx, checkpoint)
+		} else {
+			e = s.mergeBatch(ctx, nil, nil, 0, incidents, checkpoint)
+		}
+		if e != nil {
+			return 0, e
+		}
 	}
 	return count, nil
 }

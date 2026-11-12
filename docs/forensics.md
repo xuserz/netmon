@@ -131,8 +131,8 @@ limitation instead of claiming complete evidence.
 
 Incidents share the main DB cap. Oldest closed windows and old incidents are
 removed first at capacity, with a replicated cutoff preventing resurrection.
-`retention: 0s` has no age expiry. Analysis runs outside capture with a durable
-cursor and checkpoints between windows. Defaults allow at most 128 changed
+`retention: 0s` has no age expiry. Analysis runs outside capture and commits
+each window's incident results together with its cursor. Defaults allow at most 128 changed
 observations per 2s tick with a 200ms work deadline. This is **not a CPU quota**.
 Interval is 1s..1m; budget is 50ms..1s and at most half the interval. Status/top
 show backlog/errors; analysis can lag under sustained overload.
